@@ -21,7 +21,7 @@
 #include <dlib/dir_nav.h>
 
 
-const char* VERSION = "1.18";
+const char* VERSION = "1.21";
 
 
 
@@ -60,9 +60,9 @@ void create_new_dataset (
         {
             // then parser[i] should be a directory
 
-            std::vector<file> files = get_files_in_directory_tree(parser[i], 
-                                                                  match_endings(".png .PNG .jpeg .JPEG .jpg .JPG .bmp .BMP .dng .DNG .gif .GIF"),
-                                                                  depth);
+            std::vector<file> files = get_files_in_directory_tree(parser[i],
+                match_endings(".png .PNG .jpeg .JPEG .jpg .JPG .bmp .BMP .dng .DNG .gif .GIF .jxl .JXL .webp .WEBP"),
+                depth);
             sort(files.begin(), files.end());
 
             for (unsigned long j = 0; j < files.size(); ++j)
@@ -339,6 +339,22 @@ void rotate_dataset(const command_line_parser& parser)
             filename = to_jpg_name(filename);
             save_jpeg(temp, filename,JPEG_QUALITY);
         }
+#ifdef DLIB_JXL_SUPPORT
+        else if (parser.option("jxl"))
+        {
+            filename = to_jxl_name(filename);
+            const float jxl_quality = std::stof(parser.option("jxl").argument());
+            save_jxl(temp, filename, jxl_quality);
+        }
+#endif
+#ifdef DLIB_WEBP_SUPPORT
+        else if (parser.option("webp"))
+        {
+            filename = to_webp_name(filename);
+            const float webp_quality = std::stof(parser.option("webp").argument());
+            save_webp(temp, filename, webp_quality);
+        }
+#endif
         else
         {
             save_png(temp, filename);
@@ -483,6 +499,22 @@ int resample_dataset(const command_line_parser& parser)
                 dimg.filename = to_jpg_name(dimg.filename);
                 save_jpeg(chip,dimg.filename, JPEG_QUALITY);
             }
+#ifdef DLIB_JXL_SUPPORT
+            else if (parser.option("jxl"))
+            {
+                dimg.filename = to_jxl_name(dimg.filename);
+                const float jxl_quality = std::stof(parser.option("jxl").argument());
+                save_jxl(chip, dimg.filename, jxl_quality);
+            }
+#endif
+#ifdef DLIB_WEBP_SUPPORT
+            else if (parser.option("webp"))
+            {
+                dimg.filename = to_webp_name(dimg.filename);
+                const float webp_quality = std::stof(parser.option("webp").argument());
+                save_webp(chip, dimg.filename, webp_quality);
+            }
+#endif
             else
             {
                 save_png(chip,dimg.filename);
@@ -508,9 +540,23 @@ int tile_dataset(const command_line_parser& parser)
 
     string out_image = parser.option("tile").argument();
     string ext = right_substr(out_image,".");
-    if (ext != "png" && ext != "jpg")
+    if (ext != "png" && ext != "jpg"
+#if DLIB_JXL_SUPPORT
+        && ext != "jxl"
+#endif
+#if DLIB_WEBP_SUPPORT
+        && ext != "webp" 
+#endif
+    )
     {
-        cerr << "The output image file must have either .png or .jpg extension." << endl;
+        cerr << "The output image file must have one of these extensions: .png, .jpg" << endl;
+#if DLIB_JXL_SUPPORT
+        cerr << ", .jxl";
+#endif
+#if DLIB_WEBP_SUPPORT
+        cerr << ", .webp";
+#endif
+        cerr << ".";
         return EXIT_FAILURE;
     }
 
@@ -552,9 +598,29 @@ int tile_dataset(const command_line_parser& parser)
     chdir.revert();
 
     if (ext == "png")
+    {
         save_png(tile_images(images), out_image);
+    }
+#ifdef DLIB_JXL_SUPPORT
+    else if (ext == "jxl")
+    {
+        // Lossless by default
+        const float jxl_quality = get_option(parser, "jxl", 100.f);
+        save_jxl(tile_images(images), out_image, jxl_quality);
+    }
+#endif
+#ifdef DLIB_WEBP_SUPPORT
+    else if (ext == "webp")
+    {
+        // Lossless by default
+        const float webp_quality = get_option(parser, "webp", 101.f);
+        save_webp(tile_images(images), out_image, webp_quality);
+    }
+#endif
     else
-        save_jpeg(tile_images(images), out_image);
+    {
+        save_jpeg(tile_images(images), out_image, JPEG_QUALITY);
+    }
 
     return EXIT_SUCCESS;
 }
@@ -571,6 +637,7 @@ int main(int argc, char** argv)
 
         parser.add_option("h","Displays this information.");
         parser.add_option("v","Display version.");
+        parser.add_option("font", "Set the label font in the GUI.", 1);
 
         parser.set_group_name("Creating XML files");
         parser.add_option("c","Create an XML file named <arg> listing a set of images.",1);
@@ -628,6 +695,12 @@ int main(int argc, char** argv)
         parser.add_option("rmignore","Remove all boxes marked ignore and save the results to a new XML file.");
         parser.add_option("rm-if-overlaps","Remove all boxes labeled <arg> if they overlap any box not labeled <arg> and save the results to a new XML file.",1);
         parser.add_option("jpg", "When saving images to disk, write them as jpg files instead of png.");
+#ifdef DLIB_JXL_SUPPORT
+        parser.add_option("jxl", "When saving images to disk, write them as jxl files instead of png, using <arg> as the quality factor.", 1);
+#endif
+#ifdef DLIB_WEBP_SUPPORT
+        parser.add_option("webp", "When saving images to disk, write them as webp files instead of png, using <arg> as the quality factor.", 1);
+#endif
 
         parser.set_group_name("Cropping sub images");
         parser.add_option("resample", "Crop out images that are centered on each object in the dataset. "
@@ -640,6 +713,8 @@ int main(int argc, char** argv)
 
 
         parser.parse(argc, argv);
+
+        const std::string font_path = get_option(parser, "font", "");
 
         const char* singles[] = {"h","c","r","l","files","convert","parts","rmdiff", "rmtrunc", "rmdupes", "seed", "shuffle", "split", "add", 
                                  "flip-basic", "flip", "rotate", "tile", "size", "cluster", "resample", "min-object-size", "rmempty",
@@ -741,6 +816,15 @@ int main(int argc, char** argv)
         parser.check_incompatible_options("rmtrunc", "ignore");
         parser.check_incompatible_options("box-images", "rename");
         parser.check_incompatible_options("box-images", "ignore");
+#ifdef DLIB_JXL_SUPPORT
+        parser.check_incompatible_options("jpg", "jxl");
+#endif
+#ifdef DLIB_WEBP_SUPPORT
+        parser.check_incompatible_options("jpg", "webp");
+#endif
+#if DLIB_JXL_SUPPORT && DLIB_WEBP_SUPPORT
+        parser.check_incompatible_options("jxl", "webp");
+#endif
         const char* convert_args[] = {"pascal-xml","pascal-v1","idl"};
         parser.check_option_arg_range("convert", convert_args);
         parser.check_option_arg_range("cluster", 0, 999);
@@ -750,6 +834,12 @@ int main(int argc, char** argv)
         parser.check_option_arg_range("cropped-object-size", 4, 10000*10000);
         parser.check_option_arg_range("crop-size", 1.0, 100.0);
         parser.check_option_arg_range("split-train-test", 0.0, 1.0);
+#ifdef DLIB_JXL_SUPPORT
+        parser.check_option_arg_range("jxl", 0.f, 100.f);
+#endif
+#ifdef DLIB_WEBP_SUPPORT
+        parser.check_option_arg_range("webp", 0.f, std::numeric_limits<float>::max());
+#endif
 
         if (parser.option("h"))
         {
@@ -1226,7 +1316,7 @@ int main(int argc, char** argv)
 
         if (parser.number_of_arguments() == 1)
         {
-            metadata_editor editor(parser[0]);
+            metadata_editor editor(parser[0], font_path);
             if (parser.option("parts"))
             {
                 std::vector<string> parts = split(parser.option("parts").argument());

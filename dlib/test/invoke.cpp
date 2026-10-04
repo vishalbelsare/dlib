@@ -5,7 +5,7 @@
 #include <array>
 #include <tuple>
 #include <utility>
-#include <dlib/invoke.h>
+#include <dlib/functional.h>
 #include "tester.h"
 
 namespace
@@ -14,6 +14,29 @@ namespace
     using namespace dlib;
 
     logger dlog("test.invoke");
+
+    // ----------------------------------------------------------------------------------------
+
+    namespace test_swap_traits
+    {
+        struct some_struct {int i{0};};
+
+        void swap(some_struct& a, some_struct& b) = delete;
+
+        static_assert(!dlib::is_swappable<some_struct>::value, "oops");
+        static_assert(!dlib::is_nothrow_swappable<some_struct>::value, "oops");
+
+        struct some_other_struct {int i{0};};
+
+        void swap(some_other_struct& a, some_other_struct& b)
+        {
+            std::swap(a.i, b.i);
+            throw std::runtime_error("toy example");
+        }
+
+        static_assert(dlib::is_swappable<some_other_struct>::value, "oops");
+        static_assert(!dlib::is_nothrow_swappable<some_other_struct>::value, "oops");
+    }
 
     // ----------------------------------------------------------------------------------------
 
@@ -44,6 +67,54 @@ namespace
         static_assert(dlib::is_invocable<decltype(func_testargs), int, std::string, std::string, const std::string&, std::string&>::value, "should be invocable!");
         static_assert(dlib::is_invocable<decltype(func_testargs), int, std::string, std::string, std::string, std::string&>::value, "should be invocable!");
         static_assert(dlib::is_invocable<decltype(func_testargs), int, std::string, std::string, std::string, std::reference_wrapper<std::string>>::value, "should be invocable!");
+        static_assert(dlib::is_invocable<decltype(func_return_addition), int, int>::value, "should be invocable!");
+        static_assert(dlib::is_invocable_r<float, decltype(func_return_addition), int, int>::value, "should be invocable_r!");
+        static_assert(!dlib::is_invocable_r<std::string, decltype(func_return_addition), int, int>::value, "should be invocable_r!");
+
+        static_assert(std::is_same<dlib::callable_args<decltype(func_testargs)>,
+                                   dlib::types_<int, std::string, const std::string&, const std::string&, std::string&>
+                                   >::value, "make this correct");
+        
+        static_assert(dlib::callable_nargs<decltype(func_testargs)>::value == 5, "bad");
+
+        static_assert(std::is_same<dlib::callable_arg<0, decltype(func_testargs)>,
+                                   int>::value, "make this correct");
+        
+        static_assert(std::is_same<dlib::callable_arg<1, decltype(func_testargs)>,
+                                   std::string>::value, "make this correct");
+
+        static_assert(std::is_same<dlib::callable_arg<2, decltype(func_testargs)>,
+                                   const std::string&>::value, "make this correct");
+
+        static_assert(std::is_same<dlib::callable_arg<3, decltype(func_testargs)>,
+                                   const std::string&>::value, "make this correct");
+
+        static_assert(std::is_same<dlib::callable_arg<4, decltype(func_testargs)>,
+                                   std::string&>::value, "make this correct");
+
+        static_assert(std::is_same<dlib::callable_return<decltype(func_testargs)>,
+                                   void>::value, "make this correct");
+
+        static_assert(is_callable<decltype(func_testargs)>::value, "bad");
+
+        static_assert(std::is_same<dlib::callable_args<decltype(func_return_addition)>,
+                                   dlib::types_<int, int>
+                                   >::value, "make this correct");
+        
+        static_assert(dlib::callable_nargs<decltype(func_return_addition)>::value == 2, "bad");
+
+        static_assert(std::is_same<dlib::callable_arg<0, decltype(func_return_addition)>,
+                                   int
+                                   >::value, "make this correct");
+
+        static_assert(std::is_same<dlib::callable_arg<1, decltype(func_return_addition)>,
+                                   int
+                                   >::value, "make this correct");
+
+        static_assert(std::is_same<dlib::callable_return<decltype(func_return_addition)>,
+                                   int>::value, "make this correct");
+        
+        static_assert(is_callable<decltype(func_return_addition)>::value, "bad");
 
         {
             std::string str = run1_str4;
@@ -73,6 +144,30 @@ namespace
 
     void test_lambdas()
     {
+        {
+            const auto f = [](int, float*, std::string&) -> long {return 1;};
+
+            static_assert(std::is_same<dlib::callable_args<decltype(f)>,
+                                       dlib::types_<int, float*, std::string&>
+                                      >::value, "make this correct");
+            
+            static_assert(dlib::callable_nargs<decltype(f)>::value == 3, "bad");
+
+            static_assert(std::is_same<dlib::callable_arg<0, decltype(f)>,
+                                       int>::value, "make this correct");
+
+            static_assert(std::is_same<dlib::callable_arg<1, decltype(f)>,
+                                       float*>::value, "make this correct");
+
+            static_assert(std::is_same<dlib::callable_arg<2, decltype(f)>,
+                                       std::string&>::value, "make this correct");
+            
+            static_assert(std::is_same<dlib::callable_return<decltype(f)>,
+                                       long>::value, "make this correct");
+            
+            static_assert(is_callable<decltype(f)>::value, "bad");
+        }
+                
         {
             std::string str = run1_str4;
             dlib::invoke([](int i, std::string ref1, const std::string& ref2, const std::string& ref3, std::string& ref4) {
@@ -123,8 +218,23 @@ namespace
 
         int get_i() const {return i;}
 
+        float operator()(const char*) {return 1.0f;}
+
         int i = 0;
     };
+
+    static_assert(std::is_same<dlib::callable_args<example_struct>,
+                               dlib::types_<const char*>>::value, "make this correct");
+    
+    static_assert(dlib::callable_nargs<example_struct>::value == 1, "bad");
+
+    static_assert(std::is_same<dlib::callable_arg<0, example_struct>,
+                                const char*>::value, "make this correct");
+    
+    static_assert(std::is_same<dlib::callable_return<example_struct>,
+                                float>::value, "make this correct");
+
+    static_assert(is_callable<example_struct>::value, "bad");
 
     void test_member_functions_and_data()
     {
@@ -323,11 +433,130 @@ namespace
         static_assert(dlib::invoke(multiply_ints, 2, 5) == 10, "this should be constexpr");
         static_assert(dlib::invoke_r<long>(multiply_ints, 2, 5) == 10, "this should be constexpr");
         constexpr constexpr_object constexpr_obj;
+#if defined (_MSC_VER)
+        constexpr_obj; // avoid warning C4101: 'constexpr_obj': unreferenced local variable
+#endif
         static_assert(dlib::invoke(&constexpr_object::multiply_ints, constexpr_obj, 2, 5) == 10, "this should be constexpr");
         static_assert(dlib::invoke_r<long>(&constexpr_object::multiply_ints, constexpr_obj, 2, 5) == 10, "this should be constexpr");
     }
 
     // ----------------------------------------------------------------------------------------
+
+    constexpr int test_bind_func(int a, int b)
+    {
+        return a - b;
+    }
+
+    struct test_bind_func_class
+    {
+        constexpr test_bind_func_class(int v) : val{v} {}
+        int val;
+        constexpr int minus(int arg) const noexcept { return val - arg; }
+    };
+
+    void test_bind_front()
+    {
+        // Pure function
+        static_assert(dlib::bind_front(test_bind_func, 50)(3) == 47, "this should be constexpr");
+        DLIB_TEST(dlib::bind_front(test_bind_func, 50)(3) == 47);
+
+        // Member function
+        static_assert(dlib::bind_front(&test_bind_func_class::minus, test_bind_func_class{50})(3) == 47, "this should be constexpr");
+        DLIB_TEST(dlib::bind_front(&test_bind_func_class::minus, test_bind_func_class{50})(3) == 47);
+        DLIB_TEST(dlib::bind_front(&test_bind_func_class::minus, std::make_shared<test_bind_func_class>(50))(3) == 47);
+
+        // Lambda
+        DLIB_TEST(dlib::bind_front([](int a, int b) {return a - b;}, 50)(3) == 47);
+    }
+
+    void test_bind_back()
+    {
+        // Pure function
+        static_assert(dlib::bind_back(test_bind_func, 50)(3) == -47, "this should be constexpr");
+        DLIB_TEST(dlib::bind_back(test_bind_func, 50)(3) == -47);
+
+        // Member function
+        static_assert(dlib::bind_back(&test_bind_func_class::minus, 50)(test_bind_func_class{3}) == -47, "this should be constexpr");
+        DLIB_TEST(dlib::bind_back(&test_bind_func_class::minus, 50)(test_bind_func_class{3}) == -47);
+        DLIB_TEST(dlib::bind_back(&test_bind_func_class::minus, 50)(std::make_shared<test_bind_func_class>(3)) == -47);
+
+        // Lambda
+        DLIB_TEST(dlib::bind_back([](int a, int b) {return a - b;}, 50)(3) == -47);
+    }
+
+    // ----------------------------------------------------------------------------------------
+
+    namespace test_callable_traits
+    {
+        template <
+          class Callable,
+          std::enable_if_t<is_callable<Callable>::value, bool> = true,
+          std::enable_if_t<callable_nargs<Callable>::value >= 1, bool> = true,
+          std::enable_if_t<std::is_floating_point<callable_arg<0, Callable>>::value, bool> = true
+        >
+        auto wrap (
+            Callable&& clb,
+            int& i
+        )
+        {
+            i = 1;
+
+            return [pclb = std::forward<Callable>(clb)](float a, int b, long c) {
+                pclb(a, b, c);
+            };
+        }
+
+        template <
+          class Callable,
+          std::enable_if_t<is_callable<Callable>::value, bool> = true,
+          std::enable_if_t<callable_nargs<Callable>::value >= 1, bool> = true,
+          std::enable_if_t<std::is_integral<callable_arg<0, Callable>>::value, bool> = true
+        >
+        auto wrap (
+            Callable&& clb,
+            int& i
+        )
+        {
+            i = 2;
+
+            return [pclb = std::forward<Callable>(clb)](int a, float b, double c) {
+                pclb(a, b, c);
+            };
+        }
+
+        template <
+          class Callable,
+          std::enable_if_t<is_callable<Callable>::value, bool> = true,
+          std::enable_if_t<callable_nargs<Callable>::value < 1, bool> = true
+        >
+        auto wrap (
+            Callable&& clb,
+            int& i
+        )
+        {
+            i = 3;
+
+            return [pclb = std::forward<Callable>(clb)] {
+                pclb();
+            };
+        }
+
+        void test()
+        {
+            const auto f1 = [](float a, int b, long c) { return a + b + c;};
+            const auto f2 = [](int a, float b, double c) { return a + b + c;};
+            const auto f3 = [] {};
+            int i{0};
+            const auto f4 = wrap(f1, i);
+            DLIB_TEST(i == 1);
+            const auto f5 = wrap(f2, i);
+            DLIB_TEST(i == 2);
+            const auto f6 = wrap(f3, i);
+            DLIB_TEST(i == 3);
+        }
+
+        static_assert(!is_callable<int>::value, "bad");
+    }
 
     class invoke_tester : public tester
     {
@@ -347,6 +576,9 @@ namespace
             test_make_from_tuple();
             test_invoke_r();
             test_constexpr();
+            test_bind_front();
+            test_bind_back();
+            test_callable_traits::test();
         }
     } a;
 }

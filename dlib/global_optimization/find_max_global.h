@@ -35,14 +35,14 @@ namespace dlib
         auto _cwv (
             T&& f, 
             const matrix<double,0,1>& a, 
-            compile_time_integer_list<indices...>
-        ) -> decltype(f(a(indices-1)...)) 
+            std::index_sequence<indices...>
+        ) -> decltype(f(a(indices)...)) 
         {
             DLIB_CASSERT(a.size() == sizeof...(indices), 
                 "You invoked dlib::call_function_and_expand_args(f,a) but the number of arguments expected by f() doesn't match the size of 'a'. "
                 << "Expected " << sizeof...(indices) << " arguments but got " << a.size() << "."
             );  
-            return f(a(indices-1)...); 
+            return f(a(indices)...); 
         }
 
         // Visual studio, as of November 2017, doesn't support C++11 and can't compile this code.  
@@ -52,13 +52,13 @@ namespace dlib
         struct call_function_and_expand_args
         {
             template <typename T>
-            static auto go(T&& f, const matrix<double,0,1>& a) -> decltype(_cwv(std::forward<T>(f),a,typename make_compile_time_integer_range<max_unpack>::type()))
+            static auto go(T&& f, const matrix<double,0,1>& a) -> decltype(_cwv(std::forward<T>(f),a,std::make_index_sequence<max_unpack>{}))
             {
-                return _cwv(std::forward<T>(f),a,typename make_compile_time_integer_range<max_unpack>::type());
+                return _cwv(std::forward<T>(f),a, std::make_index_sequence<max_unpack>{});
             }
 
             template <typename T>
-            static auto go(T&& f, const matrix<double,0,1>& a) -> decltype(call_function_and_expand_args<max_unpack-1>::template go(std::forward<T>(f),a))
+            static auto go(T&& f, const matrix<double,0,1>& a) -> decltype(call_function_and_expand_args<max_unpack-1>::template go<T>(std::forward<T>(f),a))
             {
                 return call_function_and_expand_args<max_unpack-1>::go(std::forward<T>(f),a);
             }
@@ -114,7 +114,7 @@ template <typename T> static auto go(T&& f, const matrix<double, 0, 1>& a) -> de
 
 // ----------------------------------------------------------------------------------------
 
-    const auto FOREVER = std::chrono::hours(24*365*290); // 290 years
+    const auto FOREVER = std::chrono::hours(24*365*200); // 200 years
     using stop_condition = std::function<bool(double)>;
     const stop_condition never_stop_early = [](double) { return false; };
 
@@ -177,8 +177,10 @@ template <typename T> static auto go(T&& f, const matrix<double, 0, 1>& a) -> de
 
             running_stats_decayed<double> objective_funct_eval_time(functions.size()*5);
             std::mutex eval_time_mutex;
-            using namespace std::chrono;
 
+            using std::chrono::steady_clock;
+            using std::chrono::duration_cast;
+            using std::chrono::nanoseconds;
             const auto time_to_stop = steady_clock::now() + max_runtime;
             //atomic<bool> doesn't support .fetch_or, use std::atomic<int> instead
             std::atomic<int> this_should_stop{false};

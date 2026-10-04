@@ -1,4 +1,4 @@
-// Copyright (C) 2015  Davis E. King (davis@dlib.net)
+﻿// Copyright (C) 2015  Davis E. King (davis@dlib.net)
 // License: Boost Software License   See LICENSE.txt for the full license.
 #ifndef DLIB_TeNSOR_TOOLS_H_
 #define DLIB_TeNSOR_TOOLS_H_
@@ -20,6 +20,8 @@ namespace dlib
     bool dnn_prefer_fastest_algorithms();
     void set_dnn_prefer_fastest_algorithms();
     void set_dnn_prefer_smallest_algorithms();
+    bool dnn_choose_algorithms_per_input_shape();
+    void set_dnn_choose_algorithms_per_input_shape(bool choose_per_input_shape);
 }
 
 namespace dlib { namespace tt
@@ -165,21 +167,56 @@ namespace dlib { namespace tt
         const tensor& lhs,
         bool trans_lhs,
         const tensor& rhs,
-        bool trans_rhs
+        bool trans_rhs,
+        operation_mode mode = operation_mode::CHANNEL_WISE
     );
     /*!
         requires
             - dest does not alias the memory of lhs or rhs
             - The dimensions of lhs and rhs must be compatible for matrix multiplication.
-              In particular:
-                - Let L == trans_lhs ? trans(mat(lhs)) : mat(lhs)
-                - Let R == trans_rhs ? trans(mat(rhs)) : mat(rhs)
-                - Let D == mat(dest)
-                - D.nr() == L.nr() && D.nc() == R.nc()
-                  (i.e. dest must be preallocated and have the correct output dimensions)
-                - L.nc() == R.nr()
+                The specific requirements depend on the mode:
+
+                For CHANNEL_WISE mode (default):
+                    - Let L == trans_lhs ? trans(mat(lhs)) : mat(lhs)
+                    - Let R == trans_rhs ? trans(mat(rhs)) : mat(rhs)
+                    - Let D == mat(dest)
+                    - D.nr() == L.nr() && D.nc() == R.nc()
+                        (i.e. dest must be preallocated and have the correct output dimensions)
+                    - L.nc() == R.nr()
+
+                For PLANE_WISE mode:
+                    - lhs.num_samples() == rhs.num_samples() && lhs.k() == rhs.k()
+                    - If !trans_lhs && !trans_rhs:
+                        lhs.nc() == rhs.nr()
+                        dest.nr() == lhs.nr() && dest.nc() == rhs.nc()
+                    - If trans_lhs && !trans_rhs:
+                        lhs.nr() == rhs.nr()
+                        dest.nr() == lhs.nc() && dest.nc() == rhs.nc()
+                    - If !trans_lhs && trans_rhs:
+                        lhs.nc() == rhs.nc()
+                        dest.nr() == lhs.nr() && dest.nc() == rhs.nr()
+                    - If trans_lhs && trans_rhs:
+                        lhs.nr() == rhs.nc()
+                        dest.nr() == lhs.nc() && dest.nc() == rhs.nr()
+
         ensures
-            - performs: dest = alpha*L*R + beta*mat(dest)
+            - Performs matrix multiplication based on the specified mode:
+
+                For CHANNEL_WISE mode:
+                    - performs: dest = alpha*L*R + beta*mat(dest)
+                        where L, R, and D are as defined above.
+
+                For PLANE_WISE mode:
+                    - Performs matrix multiplication for each corresponding 2D plane (nr x nc)
+                        in lhs and rhs across all samples and channels.
+                    - The operation is equivalent to performing the following for each sample
+                        and channel:
+                            dest[s][k] = alpha * (lhs[s][k] * rhs[s][k]) + beta * dest[s][k]
+                            where [s][k] represents the 2D plane for sample s and channel k.
+            
+                Note that the PLANE_WISE mode is particularly useful for operations like attention
+                mechanisms in neural networks, where you want to perform matrix multiplications
+                on 2D planes of 4D tensors while preserving the sample and channel dimensions.
     !*/
 
 // ----------------------------------------------------------------------------------------
@@ -257,10 +294,9 @@ namespace dlib { namespace tt
         !*/
 
 #ifdef DLIB_USE_CUDA
-        cuda::curand_generator rnd;
-#else
-        dlib::rand rnd;
+        cuda::curand_generator cuda_impl;
 #endif
+        dlib::rand cpu_impl;
     };
 
 // ----------------------------------------------------------------------------------------
@@ -814,13 +850,13 @@ namespace dlib { namespace tt
     /*!
         requires
             - eps > 0
-            - src.num_samples() == gamma.size() == beta.size()
+            - src.k() == gamma.size() == beta.size()
+            - gamma.num_samples() == gamma.nr() == gamma.nc() == 1
             - have_same_dimensions(gamma, beta) == true
-            - beta.num_samples() ==beta.nr() ==gamma.nc() == 1
         ensures
             - have_same_dimensions(#dest, src) == true
             - #means.size() == invstds.size() == src.num_samples()
-            - #dest == the normalized version of src.
+            - #dest == the normalized version of src, sample-wise.
             - #means == the mean values of the contents of src.
             - #invstds == 1/(the standard deviation values of the contents of src).
     !*/
@@ -834,7 +870,9 @@ namespace dlib { namespace tt
             const tensor& gamma,
             tensor& src_grad,
             tensor& gamma_grad,
-            tensor& beta_grad
+            tensor& beta_grad,
+            resizable_tensor& dmeans,
+            resizable_tensor& dvars
     );
     /*!
         requires
@@ -847,8 +885,6 @@ namespace dlib { namespace tt
             - have_same_dimensions(gamma, beta_grad) == true
             - means.size() == src.num_samples()
             - invstds.size() == src.num_samples()
-            - have_same_dimensions(means, gamma) == true
-            - have_same_dimensions(invstds, gamma) == true
         ensures
             - Let f(src,gamma,beta) == dot(gradient_input, dest output of
               layer_normalize(eps,dest,means,invstds,src,gamma,beta))
@@ -857,7 +893,58 @@ namespace dlib { namespace tt
             - Assigns the gradient of f() with respect to beta to #beta_grad.
     !*/
 
-    // -----------------------------------------------------------------------------------
+// -----------------------------------------------------------------------------------
+
+    void rms_normalize(
+        const double eps,
+        resizable_tensor& dest,
+        resizable_tensor& scale,
+        const tensor& src,
+        const tensor& gamma
+    );
+    /*!
+        requires
+            - eps > 0
+            - gamma.k() == src.k()
+            - gamma.nr() == 1
+            - gamma.nc() == 1
+        ensures
+            - have_same_dimensions(#dest, src) == true
+            - #scale.size() == src.num_samples()
+            - #dest == the RMS normalized version of src
+            - #scale contains the RMS (Root Mean Square) values used to normalize each sample of src.
+            - Each element of #dest is computed as:
+                - #dest[n, k, i, j] == src[n, k, i, j] * gamma[k] / scale[n]
+            where n is the sample index, k is the channel index, and i, j are the spatial indices.
+    !*/
+
+    void rms_normalize_gradient(
+        const tensor& gradient_input,
+        const tensor& scale,
+        const tensor& src,
+        const tensor& gamma,
+        tensor& src_grad,
+        tensor& gamma_grad,
+        resizable_tensor& dscale
+    );
+    /*!
+        requires
+            - scale.size() == src.num_samples()
+            - have_same_dimensions(gamma, gamma_grad)
+            - gamma.k() == src.k()
+            - gamma.nr() == 1
+            - gamma.nc() == 1
+            - have_same_dimensions(gradient_input, src)
+            - have_same_dimensions(gradient_input, src_grad)
+        ensures
+            - Let f(src, gamma) == dot(gradient_input, dest output of
+                rms_normalize(eps, dest, scale, src, gamma))
+            - Adds the gradient of f() with respect to src to #src_grad
+            - Assigns the gradient of f() with respect to gamma to #gamma_grad
+            - #dscale contains the gradients of f() with respect to the RMS values.
+    !*/
+
+// -----------------------------------------------------------------------------------
 
     void threshold (
         tensor& data,
@@ -988,14 +1075,32 @@ namespace dlib { namespace tt
         tensor_conv() {}
 
         void clear(
-        ) { impl.clear(); }
+        )
+        {
+            IF_DLIB_USE_CUDA(
+                cuda_impl.clear();
+            )
+
+            IF_DLIB_NOT_USE_CUDA(
+                cpu_impl.clear();
+            )
+        }
 
         void operator() (
             const bool add_to_output,
             tensor& output,
             const tensor& data,
             const tensor& filters
-        ) { impl(add_to_output,output,data,filters); }
+        )
+        {
+            IF_DLIB_USE_CUDA(
+                cuda_impl(add_to_output,output,data,filters);
+            )
+
+            IF_DLIB_NOT_USE_CUDA(
+                cpu_impl(add_to_output,output,data,filters);
+            )
+        }
         /*!
             requires
                 - setup() has been called.  Specifically, setup() has been called like this:
@@ -1021,7 +1126,16 @@ namespace dlib { namespace tt
             resizable_tensor& output,
             const tensor& data,
             const tensor& filters
-        ) { impl(add_to_output,output,data,filters); }
+        )
+        {
+            IF_DLIB_USE_CUDA(
+                cuda_impl(add_to_output,output,data,filters);
+            )
+
+            IF_DLIB_NOT_USE_CUDA(
+                cpu_impl(add_to_output,output,data,filters);
+            )
+        }
         /*!
             requires
                 - setup() has been called.  Specifically, setup() has been called like this:
@@ -1047,8 +1161,18 @@ namespace dlib { namespace tt
             tensor& output,
             const tensor& data,
             const tensor& filters,
-            const tensor& biases
-        ) { impl(add_to_output,output,data,filters,biases); }
+            const tensor& biases,
+            bool use_relu
+        )
+        {
+            IF_DLIB_USE_CUDA(
+                cuda_impl(add_to_output,output,data,filters,biases,use_relu);
+            )
+
+            IF_DLIB_NOT_USE_CUDA(
+                cpu_impl(add_to_output,output,data,filters,biases,use_relu);
+            )
+        }
         /*!
             requires
                 - setup() has been called.  Specifically, setup() has been called like this:
@@ -1069,6 +1193,8 @@ namespace dlib { namespace tt
                   previous values in output.
                 - Adds biases to the result of the convolved data
                 - filters contains filters.num_samples() filters.
+                - If use_relu==true, then a relu activation will be applied to the result
+                  of convolution+bias.
         !*/
 
         void operator() (
@@ -1076,8 +1202,18 @@ namespace dlib { namespace tt
             resizable_tensor& output,
             const tensor& data,
             const tensor& filters,
-            const tensor& biases
-        ) { impl(add_to_output,output,data,filters, biases); }
+            const tensor& biases,
+            bool use_relu
+        )
+        {
+            IF_DLIB_USE_CUDA(
+                cuda_impl(add_to_output,output,data,filters,biases,use_relu);
+            )
+
+            IF_DLIB_NOT_USE_CUDA(
+                cpu_impl(add_to_output,output,data,filters,biases,use_relu);
+            )
+        }
         /*!
             requires
                 - setup() has been called.  Specifically, setup() has been called like this:
@@ -1105,7 +1241,16 @@ namespace dlib { namespace tt
             const tensor& gradient_input, 
             const tensor& filters,
             tensor& data_gradient
-        ) { impl.get_gradient_for_data(add_to_output,gradient_input,filters,data_gradient); }
+        )
+        {
+            IF_DLIB_USE_CUDA(
+                cuda_impl.get_gradient_for_data(add_to_output,gradient_input,filters,data_gradient);
+            )
+
+            IF_DLIB_NOT_USE_CUDA(
+                cpu_impl.get_gradient_for_data(add_to_output,gradient_input,filters,data_gradient);
+            )
+        }
         /*!
             requires
                 - One of the following must be true:
@@ -1140,7 +1285,16 @@ namespace dlib { namespace tt
             const tensor& gradient_input, 
             const tensor& data,
             tensor& filters_gradient
-        ) { impl.get_gradient_for_filters(add_to_output,gradient_input,data,filters_gradient); }
+        )
+        {
+            IF_DLIB_USE_CUDA(
+                cuda_impl.get_gradient_for_filters(add_to_output,gradient_input,data,filters_gradient);
+            )
+
+            IF_DLIB_NOT_USE_CUDA(
+                cpu_impl.get_gradient_for_filters(add_to_output,gradient_input,data,filters_gradient);
+            )
+        }
         /*!
             requires
                 - One of the following must be true:
@@ -1178,7 +1332,16 @@ namespace dlib { namespace tt
             int stride_x,
             int padding_y,
             int padding_x
-        ) {impl.setup(data,filters,stride_y,stride_x,padding_y,padding_x); }
+        )
+        {
+            IF_DLIB_USE_CUDA(
+                cuda_impl.setup(data,filters,stride_y,stride_x,padding_y,padding_x);
+            )
+
+            IF_DLIB_NOT_USE_CUDA(
+                cpu_impl.setup(data,filters,stride_y,stride_x,padding_y,padding_x);
+            )
+        }
         /*!
             requires
                 - filters.k() == data.k()
@@ -1202,11 +1365,9 @@ namespace dlib { namespace tt
 
     private:
 #ifdef DLIB_USE_CUDA
-        cuda::tensor_conv impl;
-#else
-        cpu::tensor_conv impl;
+        cuda::tensor_conv cuda_impl;
 #endif
-
+        cpu::tensor_conv cpu_impl;
     };
 
 // ----------------------------------------------------------------------------------------
@@ -1227,7 +1388,16 @@ namespace dlib { namespace tt
         ) = default;
 
         void clear(
-        ) { impl.clear(); }
+        )
+        {
+            IF_DLIB_USE_CUDA(
+                cuda_impl.clear();
+            )
+
+            IF_DLIB_NOT_USE_CUDA(
+                cpu_impl.clear();
+            )
+        }
 
         void setup_max_pooling(
             int window_height,
@@ -1236,7 +1406,16 @@ namespace dlib { namespace tt
             int stride_x,
             int padding_y,
             int padding_x
-        ) { impl.setup_max_pooling(window_height, window_width, stride_y, stride_x, padding_y, padding_x); }
+        )
+        {
+            IF_DLIB_USE_CUDA(
+                cuda_impl.setup_max_pooling(window_height, window_width, stride_y, stride_x, padding_y, padding_x);
+            )
+
+            IF_DLIB_NOT_USE_CUDA(
+                cpu_impl.setup_max_pooling(window_height, window_width, stride_y, stride_x, padding_y, padding_x);
+            )
+        }
         /*!
             requires
                 - window_height > 0
@@ -1257,7 +1436,16 @@ namespace dlib { namespace tt
             int stride_x,
             int padding_y,
             int padding_x
-        ) { impl.setup_avg_pooling(window_height, window_width, stride_y, stride_x, padding_y, padding_x); }
+        )
+        {
+            IF_DLIB_USE_CUDA(
+                cuda_impl.setup_avg_pooling(window_height, window_width, stride_y, stride_x, padding_y, padding_x);
+            )
+
+            IF_DLIB_NOT_USE_CUDA(
+                cpu_impl.setup_avg_pooling(window_height, window_width, stride_y, stride_x, padding_y, padding_x);
+            )
+        }
         /*!
             requires
                 - window_height > 0
@@ -1272,12 +1460,30 @@ namespace dlib { namespace tt
         !*/
 
         bool does_max_pooling(
-        ) const { return impl.does_max_pooling(); }
+        ) const
+        {
+            IF_DLIB_USE_CUDA(
+                return cuda_impl.does_max_pooling();
+            )
+
+            IF_DLIB_NOT_USE_CUDA(
+                return cpu_impl.does_max_pooling();
+            )
+        }
 
         void operator() (
             resizable_tensor& dest,
             const tensor& src
-        ) { impl(dest, src); }
+        )
+        {
+            IF_DLIB_USE_CUDA(
+                cuda_impl(dest, src);
+            )
+
+            IF_DLIB_NOT_USE_CUDA(
+                cpu_impl(dest, src);
+            )
+        }
         /*!
             requires
                 - is_same_object(dest,src) == false
@@ -1305,7 +1511,16 @@ namespace dlib { namespace tt
             const tensor& dest,
             const tensor& src,
             tensor& grad 
-        ) { impl.get_gradient(gradient_input, dest, src, grad); }
+        )
+        {
+            IF_DLIB_USE_CUDA(
+                cuda_impl.get_gradient(gradient_input, dest, src, grad);
+            )
+
+            IF_DLIB_NOT_USE_CUDA(
+                cpu_impl.get_gradient(gradient_input, dest, src, grad);
+            )
+        }
         /*!
             requires
                 - have_same_dimensions(gradient_input,dest) == true
@@ -1323,52 +1538,61 @@ namespace dlib { namespace tt
 
         private:
 #ifdef DLIB_USE_CUDA
-        cuda::pooling impl;
-#else
-        cpu::pooling impl;
+        cuda::pooling cuda_impl;
 #endif
+        cpu::pooling cpu_impl;
     };
 
 // ----------------------------------------------------------------------------------------
 
-    void softmax (
+    void softmax(
         tensor& dest,
-        const tensor& src
+        const tensor& src,
+        operation_mode mode = operation_mode::CHANNEL_WISE
     );
     /*!
         requires
             - have_same_dimensions(dest, src) == true
+            - mode == CHANNEL_WISE || mode == PLANE_WISE
         ensures
-            - Note that the softmax function is a vector valued function: 
-                s(x) == exp(x)/sum(exp(x)) 
-            - Computes the softmax function on src and writes the results to dest.  The
-              softmax is computed per spatial location across the different channels at
-              each location.  That is, softmax() outputs a new tensor, #dest, where each of
+            - Note that the softmax function is a vector valued function:
+              s(x) == exp(x)/sum(exp(x))
+            - Computes the softmax function on src and writes the results to dest.
+            - If mode == CHANNEL_WISE:
+              The softmax is computed per spatial location across the different channels at
+              each location. That is, softmax() outputs a new tensor, #dest, where each of
               the spatial locations in dest (i.e. image idx, row idx, and column idx)
-              contains the output of s() evaluated over the channel values at each
-              location.
+              contains the output of s() evaluated over the channel values at each location.
+            - If mode == PLANE_WISE:
+              The softmax is computed across entire planes (nr x nc) of the input tensor.
+              This is useful for operations in Large Language Models (LLMs) and other
+              applications requiring 2D tensor processing.
             - This function supports in-place operation, i.e. having
               is_same_object(dest, src)==true
     !*/
 
-    void softmax_gradient (
+    void softmax_gradient(
         tensor& grad,
         const tensor& dest,
-        const tensor& gradient_input
+        const tensor& gradient_input,
+        operation_mode mode = operation_mode::CHANNEL_WISE
     );
     /*!
         requires
-            - have_same_dimensions(dest,gradient_input) == true 
-            - have_same_dimensions(dest,grad) == true 
+            - have_same_dimensions(dest,gradient_input) == true
+            - have_same_dimensions(dest,grad) == true
+            - mode == CHANNEL_WISE || mode == PLANE_WISE
         ensures
-            - We interpret dest as the output of softmax(dest,SRC) for some SRC tensor.
-              Then let f(SRC) == dot(gradient_input,dest).  Then this function computes the
-              gradient of f() with respect to SRC and stores it to grad.  Moreover, if
-              is_same_object(grad,gradient_input)==true then the output is assigned to
-              grad, replacing its previous contents.  Otherwise the output is added to
-              grad.
+            - We interpret dest as the output of softmax(dest,SRC,mode) for some SRC tensor.
+            Then let f(SRC) == dot(gradient_input,dest).  Then this function computes the
+            gradient of f() with respect to SRC and stores it to grad.  Moreover, if
+            is_same_object(grad,gradient_input)==true then the output is assigned to
+            grad, replacing its previous contents.  Otherwise the output is added to grad.
+            - The gradient computation takes into account the specified mode:
+            - If mode == CHANNEL_WISE: The gradient is computed per spatial location across channels.
+            - If mode == PLANE_WISE: The gradient is computed across entire planes of the tensor.
             - This function supports in-place operation, i.e. having
-              is_same_object(grad, gradient_input)==true
+            is_same_object(grad, gradient_input)==true
     !*/
 
 // ----------------------------------------------------------------------------------------
@@ -1749,6 +1973,84 @@ namespace dlib { namespace tt
 
 // ----------------------------------------------------------------------------------------
 
+    void smelu (
+        tensor& dest,
+        const tensor& src,
+        const float beta
+    );
+    /*!
+        requires
+            - have_same_dimensions(dest, src) == true
+            - beta > 0
+        ensures
+            - for all valid i:
+                - if (src.host()[i] > beta) then
+                    - #dest.host()[i] == src.host()[i]
+                - else if (src.host()[i] < -beta) then
+                    - #dest.host()[i] == 0
+                - else
+                    - #dest.host()[i] == std::pow(src.host()[i] + beta), 2) / (4 * beta)
+    !*/
+
+    void smelu_gradient (
+        tensor& grad,
+        const tensor& dest,
+        const tensor& gradient_input,
+        const float beta
+    );
+    /*!
+        requires
+            - have_same_dimensions(dest,gradient_input) == true
+            - have_same_dimensions(dest,grad) == true
+            - beta > 0
+        ensures
+            - Recalling that dest is the output of smelu(dest,SRC) for some SRC tensor,
+              let f(SRC) == dot(gradient_input,dest).  Then this function computes the
+              gradient of f() with respect to SRC and stores it to grad.  Moreover, if
+              is_same_object(grad,gradient_input)==true then the output is assigned to
+              grad, replacing its previous contents.  Otherwise the output is added to
+              grad.
+            - This function supports in-place operation, i.e. having
+              is_same_object(grad, gradient_input)==true
+    !*/
+
+// ----------------------------------------------------------------------------------------
+
+    void silu (
+        tensor& dest,
+        const tensor& src
+    );
+    /*!
+        requires
+            - have_same_dimensions(dest, src) == true
+        ensures
+            - for all valid i:
+                - #dest.host()[i] == src.host()[i] * sigmoid(src.host()[i])
+            - This function supports in-place operation, i.e. having
+              is_same_object(dest, src)==true
+    !*/
+
+    void silu_gradient (
+        tensor& grad,
+        const tensor& src,
+        const tensor& gradient_input
+    );
+    /*!
+        requires
+            - have_same_dimensions(src,gradient_input) == true
+            - have_same_dimensions(src,grad) == true
+        ensures
+            - Recalling that dest is the output of silu(dest,src), let f(src) ==
+              dot(gradient_input,dest). Then this function computes the gradient of f() with respect
+              to src and stores it to grad.  Moreover, if is_same_object(grad,gradient_input)==true
+              then the output is assigned to grad, replacing its previous contents.  Otherwise the
+              output is added to grad.
+            - This function supports in-place operation, i.e. having
+              is_same_object(grad, gradient_input)==true
+    !*/
+
+// ----------------------------------------------------------------------------------------
+
     void resize_bilinear (
         tensor& dest,
         long dest_row_stride,
@@ -1832,6 +2134,162 @@ namespace dlib { namespace tt
               gradient.  All that matters is that gradient_input have the same dimensions
               as DEST.
     !*/
+
+// ----------------------------------------------------------------------------------------
+
+    void reorg (
+        bool add_to,
+        tensor& dest,
+        const int row_stride,
+        const int col_stride,
+        const tensor& src
+    );
+    /*!
+        requires
+            - !is_same_object(dest, src)
+            - src.nr() % row_stride == 0
+            - src.nc() % col_stride == 0
+            - dest.num_samples() == src.num_samples()
+            - dest.k() == src.k() * row_stride * col_stride
+            - dest.nr() == src.nr() / row_stride
+            - dest.nc() == src.nc() / col_stride
+        ensures
+            - Reorganizes the spatial resolution of src into channel information in dest, effectively
+              shifting spatial data into the channel dimension based on the specified strides.
+            - If add_to is false:
+                - Each element in dest is set to the corresponding reorganized value from src.
+            - If add_to is true:
+                - Each element in dest is incremented by the corresponding reorganized value from src.
+            - Specifically, for all n, k, r, c in dest:
+                - If add_to is false:
+                    dest.host[tensor_index(dest, n, k, r, c)] =
+                        src.host[tensor_index(src,
+                                            n,
+                                            k % src.k(),
+                                            r * row_stride + (k / src.k()) / col_stride,
+                                            c * col_stride + (k / src.k()) % col_stride)];
+                - If add_to is true:
+                    dest.host[tensor_index(dest, n, k, r, c)] +=
+                        src.host[tensor_index(src,
+                                            n,
+                                            k % src.k(),
+                                            r * row_stride + (k / src.k()) / col_stride,
+                                            c * col_stride + (k / src.k()) % col_stride)];
+    !*/
+
+    void reorg_gradient (
+        bool add_to,
+        tensor& grad,
+        const int row_stride,
+        const int col_stride,
+        const tensor& gradient_input
+    );
+    /*!
+        requires
+            - !is_same_object(grad, gradient_input)
+            - gradient_input.nr() % row_stride == 0
+            - gradient_input.nc() % col_stride == 0
+            - grad.num_samples() == gradient_input.num_samples()
+            - grad.k() == gradient_input.k() / row_stride / col_stride
+            - grad.nr() == gradient_input.nr() * row_stride
+            - grad.nc() == gradient_input.nc() * col_stride
+        ensures
+            - Computes the gradient of the function f(SRC) = DEST, where DEST is the result of
+              reorg(DEST, row_stride, col_stride, SRC).
+            - If add_to is false:
+                - Each element in grad is set to the corresponding gradient value.
+            - If add_to is true:
+                - Each element in grad is incremented by the corresponding gradient value.
+            - Specifically, for all n, k, r, c in grad:
+                - If add_to is false:
+                    grad.host[tensor_index(grad, n, k, r, c)] =
+                        gradient_input.host[tensor_index(gradient_input,
+                                                        n,
+                                                        (k*row_stride*col_stride) + (r%row_stride)*col_stride + c%col_stride,
+                                                        r/row_stride,
+                                                        c/col_stride)];
+                - If add_to is true:
+                    grad.host[tensor_index(grad, n, k, r, c)] +=
+                        gradient_input.host[tensor_index(gradient_input,
+                                                        n,
+                                                        (k*row_stride*col_stride) + (r%row_stride)*col_stride + c%col_stride,
+                                                        r/row_stride,
+                                                        c/col_stride)];
+            - This function effectively reverses the reorg operation, distributing gradients
+              from the channel dimension of gradient_input to the spatial dimensions of grad.
+    !*/
+
+// ----------------------------------------------------------------------------------------
+
+    void embeddings(
+        resizable_tensor& dest,
+        const tensor& src,
+        const tensor& embs
+    );
+    /*!
+        requires
+            - src.nr() > 0
+            - embs.num_samples() > 0
+            - embs.k() > 0
+            - embs.nr() == 1
+            - embs.nc() == 1
+            - dest.num_samples() == src.num_samples()
+            - dest.k() == src.k()
+            - dest.nr() == src.nr()
+            - dest.nc() == embs.k()
+        ensures
+            - Projects tokens from the input tensor `src` into embeddings stored in `embs`.
+            - The resulting embeddings are stored in the `dest` tensor.
+            - For all valid s (0 <= s < dest.num_samples()),
+                        k (0 <= k < dest.k()),
+                        r (0 <= r < dest.nr()),
+                        c (0 <= c < dest.nc()):
+                - Let token_idx = static_cast<unsigned long>(src(s,k,r,0))
+                - If token_idx < embs.num_samples():
+                    - #dest(s,k,r,c) = embs(token_idx, c, 0, 0)
+                - Else:
+                    - #dest(s,k,r,c) = 0
+            - The function iterates over all elements of src and populates dest accordingly.
+            - If a token index in src is out of range (>= embs.num_samples()),
+              the corresponding embedding in dest is filled with 0's.
+    */
+
+    void embeddings_gradient(
+        const tensor& prev,
+        const tensor& gradient_input,
+        tensor& grads,
+        const tensor& freqs,
+        float learning_rate,
+        bool scale
+    );
+    /*!
+        requires
+            - prev.nr() > 0
+            - gradient_input.num_samples() == prev.num_samples()
+            - gradient_input.k() == prev.k()
+            - gradient_input.nr() == prev.nr()
+            - gradient_input.nc() == grads.k()
+            - grads.num_samples() > 0
+            - grads.k() > 0
+            - grads.nr() == 1
+            - grads.nc() == 1
+            - freqs.num_samples() == grads.num_samples()
+            - freqs.k() == 1
+            - freqs.nr() == 1
+            - freqs.nc() == 1
+        ensures
+            - Updates the `grads` tensor based on the gradients in `gradient_input`.
+            - For each sample s, channel k, and row r in prev:
+                - Retrieves the token index from prev[s,k,r,0]
+                - If the token index is valid (< grads.num_samples()):
+                    - If scale is true:
+                        - Computes a frequency scale factor based on freqs[token_idx]
+                        - The scale factor is min(0.15, max(1.0 / freqs[token_idx], 1.0))
+                    - For each column c in gradient_input:
+                        - Updates grads[token_idx, c] -= gradient_input[s,k,r,c] * learning_rate * freq_scale
+            - The updates to grads are performed atomically to handle concurrent updates to the same embedding.
+            - The function is thread-safe and processes samples in parallel.
+    */
 
 // ----------------------------------------------------------------------------------------
 
@@ -1998,6 +2456,191 @@ namespace dlib { namespace tt
             - else
                 - performs: dest[i, k + dest_k_offset, r, c]  = src[i, k + src_k_offset, r, c], where k in [0..count_k]
                   i.e., copies content of each sample from src in to corresponding place of sample at dest.
+    !*/
+
+// ----------------------------------------------------------------------------------------
+
+    void copy_tensor(
+        bool add_to,
+        tensor& dest,
+        size_t dk, size_t dnr, size_t dnc,
+        const tensor& src,
+        size_t sk, size_t snr, size_t snc,
+        size_t k, size_t nr, size_t nc
+    );
+    /*!
+        requires
+            - dest.num_samples() == src.num_samples()
+            - dest.k() - dk >= k
+            - dest.nr() - dnr >= nr
+            - dest.nc() - dnc >= nc
+            - src.k() - sk >= k
+            - src.nr() - snr >= nr
+            - src.nc() - snc >= nc
+            - is_same_object(dest,src) == false
+            - The memory areas of src and dest do not overlap.
+        ensures
+            - if (add_to) then
+                - performs: dest[i, j + dk, r + dnr, c + dnc] += src[i, j + sk, r + snr, c + snc], where j in [0..k],
+                  r in [0..nr] and c in [0..nc]
+                  i.e., adds content of each sample from src in to corresponding place of sample at dest.
+            - else
+                - performs: dest[i, j + dk, r + dnr, c + dnc]  = src[i, j + sk, r + snr, c +snc], where j in [0..k],
+                  r in [0..nr] and c in [0..nc]
+                  i.e., copies content of each sample from src in to corresponding place of sample at dest.
+    !*/
+
+// ----------------------------------------------------------------------------------------
+
+    void transpose(
+        bool add_to,
+        tensor& dest,
+        const tensor& src
+    );
+    /*!
+        requires
+            - is_same_object(dest, src) == false
+            - dest.num_samples() == src.num_samples()
+            - dest.k() == src.k()
+            - dest.nr() == src.nc()
+            - dest.nc() == src.nr()            
+        ensures
+            - Performs a transpose operation on the nr() x nc() matrices within src.
+            - If (add_to) is false:
+                - The result is stored in dest, overwriting its previous contents.
+                - For all valid n, k, r, c:
+                    - #dest(n,k,c,r) == src(n,k,r,c)
+            - If (add_to) is true:
+                - The result is added to the existing contents of dest.
+                - For all valid n, k, r, c:
+                    - #dest(n,k,c,r) == dest(n,k,c,r) + src(n,k,r,c)
+    !*/
+
+// ----------------------------------------------------------------------------------------
+
+    // ACT (Adaptive Computation Time) operations
+
+    void compute_act_halt_probabilities(
+        resizable_tensor& halt_probs,
+        resizable_tensor& logits,
+        const tensor& input_data,
+        const tensor& halt_params,
+        long batch_size,
+        long seq_len,
+        long feature_dim
+    );
+    /*!
+        requires
+            - halt_params.size() == feature_dim + 1 (weights + bias)
+            - input_data.num_samples() == batch_size
+            - input_data.k() == num_channels where feature_dim = num_channels * d_model
+            - input_data.nr() == seq_len
+            - input_data.nc() == d_model
+        ensures
+            - Computes halting probabilities for Adaptive Computation Time:
+                - halt_probs contains sigmoid(W_halt^T * input + b_halt) for each position
+                - logits contains the pre-sigmoid values
+            - batch_size: number of samples in the batch
+            - seq_len: sequence length (number of positions to process)
+            - feature_dim: total feature dimension (num_channels × d_model)
+    !*/
+
+    void update_act_state(
+        resizable_tensor& output,
+        const tensor& input_data,
+        const tensor& halt_probs,
+        resizable_tensor& cumulative_halting,
+        resizable_tensor& remainders,
+        resizable_tensor& n_steps,
+        resizable_tensor& effective_weights,
+        long batch_size,
+        long seq_len,
+        long d_model,
+        long num_channels,
+        float halt_threshold,
+        long current_step
+    );
+    /*!
+        requires
+            - 0 < halt_threshold <= 1.0
+            - current_step >= 0
+            - input_data.num_samples() == batch_size
+            - input_data.k() == num_channels
+            - input_data.nr() == seq_len
+            - input_data.nc() == d_model
+            - output has the same dimensions as input_data
+            - halt_probs.size() == batch_size * seq_len
+            - cumulative_halting.size() == remainders.size() == n_steps.size() == effective_weights.size() == batch_size * seq_len
+        ensures
+            - Core ACT update step that accumulates weighted outputs:
+                - Updates ACT state for all positions
+                - Accumulates weighted outputs: output += α_t^n * input_data
+                - Updates cumulative_halting, remainders, n_steps, and effective_weights
+            - batch_size: number of samples in the batch
+            - seq_len: sequence length (number of positions to process)
+            - d_model: model dimension per channel
+            - num_channels: number of feature channels
+            - halt_threshold: halting threshold (typically 0.99)
+            - current_step: current computation step index (0-based)
+    !*/
+
+    void finalize_act_output(
+        resizable_tensor& output,
+        const tensor& input_data,
+        const tensor& remainders,
+        resizable_tensor& effective_weights,
+        long batch_size,
+        long seq_len,
+        long d_model,
+        long num_channels
+    );
+    /*!
+        requires
+            - input_data.num_samples() == batch_size
+            - input_data.k() == num_channels
+            - input_data.nr() == seq_len
+            - input_data.nc() == d_model
+            - output has the same dimensions as input_data
+            - remainders.size() == effective_weights.size() == batch_size * seq_len
+        ensures
+            - Finalizes ACT output by adding remainder contributions:
+                - Adds final remainder contributions: output += ρ_t * input_data
+                - Updates effective_weights with remainder values
+                - Applied only to positions with significant remainder (> 1e-6)
+            - batch_size: number of samples in the batch
+            - seq_len: sequence length (number of positions to process)
+            - d_model: model dimension per channel
+            - num_channels: number of feature channels
+    !*/
+
+    void apply_act_depth_scaling(
+        tensor& gradients,
+        const tensor& n_steps,
+        long batch_size,
+        long seq_len,
+        long d_model,
+        long num_channels,
+        float max_steps,
+        float scale_factor
+    );
+    /*!
+        requires
+            - scale_factor >= 0
+            - max_steps > 0
+            - gradients.num_samples() == batch_size
+            - gradients.k() == num_channels
+            - gradients.nr() == seq_len
+            - gradients.nc() == d_model
+            - n_steps.size() == batch_size * seq_len
+        ensures
+            - Applies gradient scaling based on computation depth:
+                - Applies depth-dependent gradient scaling
+                - scale = 1 + scale_factor * (n_steps[pos] / max_steps)
+            - seq_len: sequence length (number of positions to process)
+            - d_model: model dimension per channel
+            - num_channels: number of feature channels
+            - max_steps: maximum allowed computation steps
+            - scale_factor: scaling strength (0 = no scaling)
     !*/
 
 // ----------------------------------------------------------------------------------------

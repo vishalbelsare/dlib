@@ -1,4 +1,4 @@
-# dlib C++ library [![Travis Status](https://travis-ci.com/davisking/dlib.svg?branch=master)](https://app.travis-ci.com/github/davisking/dlib)
+# dlib C++ library  [![GitHub Actions C++ Status](https://github.com/davisking/dlib/actions/workflows/build_cpp.yml/badge.svg)](https://github.com/davisking/dlib/actions/workflows/build_cpp.yml) [![GitHub Actions Python Status](https://github.com/davisking/dlib/actions/workflows/build_python.yml/badge.svg)](https://github.com/davisking/dlib/actions/workflows/build_python.yml)
 
 Dlib is a modern C++ toolkit containing machine learning algorithms and tools for creating complex software in C++ to solve real world problems. See [http://dlib.net](http://dlib.net) for the main project documentation and API reference.
 
@@ -6,7 +6,7 @@ Dlib is a modern C++ toolkit containing machine learning algorithms and tools fo
 
 ## Compiling dlib C++ example programs
 
-Go into the examples folder and type:
+You need a C++17 compiler and CMake. Go into the examples folder and type:
 
 ```bash
 mkdir build; cd build; cmake .. ; cmake --build .
@@ -21,9 +21,9 @@ mkdir build; cd build; cmake .. -DUSE_AVX_INSTRUCTIONS=1; cmake --build .
 
 Doing so will make some things run faster.
 
-Finally, Visual Studio users should usually do everything in 64bit mode.  By default Visual Studio is 32bit, both in its outputs and its own execution, so you have to explicitly tell it to use 64bits.  Since it's not the 1990s anymore you probably want to use 64bits.  Do that with a cmake invocation like this:
+Visual Studio users can explicitly select a 64bit target and compiler with a CMake invocation like this:
 ```bash
-cmake .. -G "Visual Studio 14 2015 Win64" -T host=x64 
+cmake .. -G "Visual Studio 17 2022" -A x64 -T host=x64
 ```
 
 ## Compiling your own C++ programs that use dlib
@@ -37,11 +37,20 @@ vcpkg install dlib
 
 ## Compiling dlib Python API
 
-Before you can run the Python example programs you must compile dlib. Type:
-
+Either fetch the latest stable release of dlib from PyPi and install that:
 ```bash
-python setup.py install
+pip install dlib
 ```
+Or fetch the very latest version from github and install that:
+```bash
+git clone https://github.com/davisking/dlib.git
+cd dlib
+pip install .
+```
+
+It's possible to change build settings by passing parameters to `setup.py` or `DLIB_*` environment variables.
+For example, setting the environment variable `DLIB_NO_GUI_SUPPORT` to `ON` will add the cmake option
+`-DDLIB_NO_GUI_SUPPORT=ON`.
 
 
 ## Running the unit test suite
@@ -64,4 +73,3 @@ This library is licensed under the Boost Software License, which can be found in
 ## dlib sponsors
 
 This research is based in part upon work supported by the Office of the Director of National Intelligence (ODNI), Intelligence Advanced Research Projects Activity (IARPA) under contract number 2014-14071600010. The views and conclusions contained herein are those of the authors and should not be interpreted as necessarily representing the official policies or endorsements, either expressed or implied, of ODNI, IARPA, or the U.S. Government.
-

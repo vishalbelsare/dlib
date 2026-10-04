@@ -10,7 +10,11 @@
 
 // figure out which SIMD instructions we can use.
 #ifndef DLIB_DO_NOT_USE_SIMD
-    #if defined(_MSC_VER) 
+    #if defined(_MSC_VER) && defined(_M_ARM64)
+        #ifndef DLIB_HAVE_NEON
+            #define DLIB_HAVE_NEON
+        #endif
+    #elif defined(_MSC_VER)
         #ifdef __AVX__
             #ifndef DLIB_HAVE_SSE2
                 #define DLIB_HAVE_SSE2
@@ -83,12 +87,14 @@
 
 #ifdef DLIB_HAVE_ALTIVEC
 #include <altivec.h>
+#undef bool
+#undef vector
+#undef pixel
 #endif
 
 #ifdef DLIB_HAVE_SSE2
     #include <xmmintrin.h>
     #include <emmintrin.h>
-    #include <mmintrin.h>
 #endif
 #ifdef DLIB_HAVE_SSE3
     #include <pmmintrin.h> // SSE3
@@ -137,7 +143,8 @@
 
     inline std::array<unsigned int,4> cpuid(int) 
     {
-        return std::array<unsigned int,4>{};
+        std::array<unsigned int,4> info = { 0 };
+        return info;
     }
 
 #endif

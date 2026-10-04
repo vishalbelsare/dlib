@@ -42,7 +42,7 @@ namespace dlib
         }
 
         void* _data = 0;
-        long _width_step = 0;
+        size_t _width_step = 0;
         long _nr = 0;
         long _nc = 0;
     };
@@ -67,7 +67,7 @@ namespace dlib
         }
 
         const void* _data = 0;
-        long _width_step = 0;
+        size_t _width_step = 0;
         long _nr = 0;
         long _nc = 0;
     };
@@ -121,12 +121,12 @@ namespace dlib
     }
 
     template <typename T>
-    inline long width_step(
+    inline size_t width_step(
         const sub_image_proxy<T>& img
     ) { return img._width_step; }
 
     template <typename T>
-    inline long width_step(
+    inline size_t width_step(
         const const_sub_image_proxy<T>& img
     ) { return img._width_step; }
 
@@ -310,7 +310,9 @@ namespace dlib
                     pixel_to_vector<double>(img[r+1][c  ])(i),
                     pixel_to_vector<double>(img[r+1][c+1])(i));
             typename image_view_type::pixel_type temp;
-            vector_to_pixel(temp, pvout);
+            const auto min_val = pixel_traits<pixel_type_t<image_view_type>>::min();
+            const auto max_val = pixel_traits<pixel_type_t<image_view_type>>::max();
+            vector_to_pixel(temp, clamp(pvout, min_val, max_val));
             assign_pixel(result, temp);
             return true;
         }
@@ -325,7 +327,7 @@ namespace dlib
         // fit a quadratic to these 9 pixels and then use that quadratic to find the interpolated 
         // value at point p.
         inline double interpolate(
-            const dlib::vector<double,2>& p,
+            const dpoint& p,
             double tl, double tm, double tr, 
             double ml, double mm, double mr, 
             double bl, double bm, double br
@@ -416,7 +418,7 @@ namespace dlib
         {
             for (long c = area.left(); c <= area.right(); ++c)
             {
-                if (!interp(imgv, map_point(dlib::vector<double,2>(c,r)), out_imgv[r][c]))
+                if (!interp(imgv, map_point(dpoint(c,r)), out_imgv[r][c]))
                     set_background(out_imgv[r][c]);
             }
         }
@@ -551,11 +553,11 @@ namespace dlib
                 y_scale(y_scale_)
             {}
 
-            dlib::vector<double,2> operator() (
-                const dlib::vector<double,2>& p
+            dpoint operator() (
+                const dpoint& p
             ) const
             {
-                return dlib::vector<double,2>(p.x()*x_scale, p.y()*y_scale);
+                return dpoint(p.x()*x_scale, p.y()*y_scale);
             }
 
         private:
@@ -975,28 +977,29 @@ namespace dlib
     point_transform_affine letterbox_image (
         const image_type1& img_in,
         image_type2& img_out,
-        long size,
         const interpolation_type& interp
     )
     {
-        DLIB_CASSERT(size > 0, "size must be bigger than zero, but was " << size);
         const_image_view<image_type1> vimg_in(img_in);
         image_view<image_type2> vimg_out(img_out);
-
-        const auto scale = size / std::max<double>(vimg_in.nr(), vimg_in.nc());
+        const long rows = vimg_out.nr();
+        const long cols = vimg_out.nc();
+        DLIB_CASSERT(vimg_out.size() > 0, "img_out size must be bigger than zero, but was " << rows << "x" << cols);
 
         // early return if the image has already the requested size and no padding is needed
-        if (scale == 1 && vimg_in.nr() == vimg_in.nc())
+        if (have_same_dimensions(vimg_in, vimg_out))
         {
             assign_image(vimg_out, vimg_in);
             return point_transform_affine();
         }
 
-        vimg_out.set_size(size, size);
+        const double rows_scale = rows / static_cast<double>(vimg_in.nr());
+        const double cols_scale = cols / static_cast<double>(vimg_in.nc());
+        const double scale = rows_scale * vimg_in.nc() > rows ? cols_scale : rows_scale;
 
-        const long nr = std::round(scale * vimg_in.nr());
-        const long nc = std::round(scale * vimg_in.nc());
-        dpoint offset((size - nc) / 2.0, (size - nr) / 2.0);
+        const long nr = std::lround(scale * vimg_in.nr());
+        const long nc = std::lround(scale * vimg_in.nc());
+        const dpoint offset((cols - nc) / 2.0, (rows - nr) / 2.0);
         const auto r = rectangle(offset.x(), offset.y(), offset.x() + nc - 1, offset.y() + nr - 1);
         zero_border_pixels(vimg_out, r);
         auto si = sub_image(img_out, r);
@@ -1010,23 +1013,10 @@ namespace dlib
         >
     point_transform_affine letterbox_image (
         const image_type1& img_in,
-        image_type2& img_out,
-        long size
-    )
-    {
-        return letterbox_image(img_in, img_out, size, interpolate_bilinear());
-    }
-
-    template <
-        typename image_type1,
-        typename image_type2
-        >
-    point_transform_affine letterbox_image (
-        const image_type1& img_in,
         image_type2& img_out
     )
     {
-        return letterbox_image(img_in, img_out, std::max(num_rows(img_in), num_columns(img_in)), interpolate_bilinear());
+        return letterbox_image(img_in, img_out, interpolate_bilinear());
     }
 
 // ----------------------------------------------------------------------------------------
@@ -1048,7 +1038,7 @@ namespace dlib
             );
 
         assign_image(out_img, fliplr(mat(in_img)));
-        std::vector<dlib::vector<double,2> > from, to;
+        std::vector<dpoint> from, to;
         rectangle r = get_rect(in_img);
         from.push_back(r.tl_corner()); to.push_back(r.tr_corner());
         from.push_back(r.bl_corner()); to.push_back(r.br_corner());
@@ -1135,7 +1125,7 @@ namespace dlib
             const full_object_detection& obj
         )
         {
-            std::vector<point> parts; 
+            std::vector<dpoint> parts; 
             parts.reserve(obj.num_parts());
             for (unsigned long i = 0; i < obj.num_parts(); ++i)
             {
@@ -1658,7 +1648,7 @@ namespace dlib
         chip_details() : angle(0), rows(0), cols(0) {}
         chip_details(const rectangle& rect_) : rect(rect_),angle(0), rows(rect_.height()), cols(rect_.width()) {}
         chip_details(const drectangle& rect_) : rect(rect_),angle(0), 
-          rows((unsigned long)(rect_.height()+0.5)), cols((unsigned long)(rect_.width()+0.5)) {}
+          rows(std::lround(rect_.height())), cols(std::lround(rect_.width())) {}
         chip_details(const drectangle& rect_, unsigned long size) : rect(rect_),angle(0) 
         { compute_dims_from_size(size); }
         chip_details(const drectangle& rect_, unsigned long size, double angle_) : rect(rect_),angle(angle_) 
@@ -1685,7 +1675,7 @@ namespace dlib
             );
 
             const point_transform_affine tform = find_similarity_transform(chip_points,img_points);
-            dlib::vector<double,2> p(1,0);
+            dpoint p(1,0);
             p = tform.get_m()*p;
 
             // There are only 3 things happening in a similarity transform.  There is a
@@ -1731,13 +1721,35 @@ namespace dlib
         }
     };
 
+    inline void serialize(const chip_details& item, std::ostream& out)
+    {
+        int version = 1;
+        serialize(version, out);
+        serialize(item.rect, out);
+        serialize(item.angle, out);
+        serialize(item.rows, out);
+        serialize(item.cols, out);
+    }
+
+    inline void deserialize(chip_details& item, std::istream& in)
+    {
+        int version = 0;
+        deserialize(version, in);
+        if (version != 1)
+            throw serialization_error("Unexpected version found while deserializing dlib::chip_details");
+        deserialize(item.rect, in);
+        deserialize(item.angle, in);
+        deserialize(item.rows, in);
+        deserialize(item.cols, in);
+    }
+
 // ----------------------------------------------------------------------------------------
 
     inline point_transform_affine get_mapping_to_chip (
         const chip_details& details
     )
     {
-        std::vector<dlib::vector<double,2> > from, to;
+        std::vector<dpoint> from, to;
         point p1(0,0);
         point p2(details.cols-1,0);
         point p3(details.cols-1, details.rows-1);
@@ -1895,7 +1907,7 @@ namespace dlib
         for (unsigned long i = 1; i < levels.size(); ++i)
             pyr(levels[i-1],levels[i]);
 
-        std::vector<dlib::vector<double,2> > from, to;
+        std::vector<dpoint> from, to;
 
         // now pull out the chips
         chips.resize(chip_locations.size());
@@ -1999,6 +2011,50 @@ namespace dlib
     )
     {
         extract_image_chip(img, location, chip, interpolate_bilinear());
+    }
+
+// ----------------------------------------------------------------------------------------
+
+    template <
+        typename image_type1,
+        typename image_type2,
+        typename interpolation_type
+    >
+    void insert_image_chip (
+        image_type1& image,
+        const image_type2& chip,
+        const chip_details& location,
+        const interpolation_type& interp
+    )
+    {
+        image_view<image_type1> vimg(image);
+        const_image_view<image_type2> vchip(chip);
+        DLIB_CASSERT(static_cast<unsigned long>(vchip.nr()) == location.rows &&
+                     static_cast<unsigned long>(vchip.nc()) == location.cols,
+                     "The chip and the location do not have the same size.")
+        const auto tf = get_mapping_to_chip(location);
+        for (long r = 0; r < vimg.nr(); ++r)
+        {
+            for (long c = 0; c < vimg.nc(); ++c)
+            {
+                interp(vchip, tf(dpoint(c, r)), vimg[r][c]);
+            }
+        }
+    }
+
+// ----------------------------------------------------------------------------------------
+
+    template <
+        typename image_type1,
+        typename image_type2
+    >
+    void insert_image_chip (
+        image_type1& image,
+        const image_type2& chip,
+        const chip_details& location
+    )
+    {
+        insert_image_chip(image, chip, location, interpolate_bilinear());
     }
 
 // ----------------------------------------------------------------------------------------

@@ -196,6 +196,48 @@ namespace dlib
             - #dnn_prefer_fastest_algorithms() == false 
     !*/
 
+    bool dnn_choose_algorithms_per_input_shape(
+    );
+    /*!
+        ensures
+            - If dlib should choose the cuDNN convolution algorithms separately for each input
+              shape then this function returns true and false otherwise.
+            - On program startup this function will default to false.  Then the algorithms
+              chosen for the first input of a given stride, padding and filter size are also used
+              for its later inputs of other shapes, even though an algorithm may need much more
+              memory for a larger input.
+    !*/
+
+    void set_dnn_choose_algorithms_per_input_shape(
+        bool choose_per_input_shape
+    );
+    /*!
+        ensures
+            - #dnn_choose_algorithms_per_input_shape() == choose_per_input_shape
+            - This setting affects subsequent algorithm selection.  It does not invalidate
+              algorithms already selected by existing convolution objects.  For consistent
+              behavior, set it at program startup, before using any neural networks.
+            - When true, each new input shape is benchmarked, which takes time.  Each thread
+              remembers the algorithms of its most recently used shapes only.
+    !*/
+
+    namespace cuda
+    {
+        bool use_cuda(
+        );
+        /*!
+            ensures
+                - If dlib will use CUDA then this function returns true and false otherwise.
+                - This function returns true if DLIB_USE_CUDA is defined,
+                  the DLIB_DISABLE_CUDA_USE environment variable is not set to a true value,
+                  and there is an available GPU device to use.
+                - This function always returns false if DLIB_USE_CUDA is not defined.
+                - A true value of DLIB_DISABLE_CUDA_USE is any value other than "",
+                  "0", "false", "False", or "FALSE".
+                - The value returned by this function is fixed after its first call.
+        !*/
+    }
+
 // ----------------------------------------------------------------------------------------
 
     template <
@@ -1758,7 +1800,7 @@ namespace dlib
             - net_type is an object of type add_layer, add_loss_layer, add_skip_layer, repeat, or
               add_tag_layer.
         ensures
-            - returns the input later of the given network object.  This is the same as just calling
+            - returns the input layer of the given network object.  This is the same as just calling
               net.input_layer().
     !*/
 

@@ -5,6 +5,7 @@
 
 #include "simd_check.h"
 #include "../uintn.h"
+#include <type_traits>
 
 namespace dlib
 {
@@ -50,8 +51,8 @@ namespace dlib
     class simd4i
     {    
         typedef union {
-            vector signed int v;
-            vector bool int b;
+            __vector signed int v;
+            __vector __bool int b;
             signed int x[4];
         } v4i;
 
@@ -60,8 +61,8 @@ namespace dlib
     public:
         inline simd4i() : x{0,0,0,0} { }
         inline simd4i(const simd4i& v) : x(v.x) { }
-        inline simd4i(const vector int& v) : x{v} { }
-        inline simd4i(const vector bool int& b) { x.b=b; }
+        inline simd4i(const __vector int& v) : x{v} { }
+        inline simd4i(const __vector __bool int& b) { x.b=b; }
 
         inline simd4i(int32 f) : x{f,f,f,f} { }
         inline simd4i(int32 r0, int32 r1, int32 r2, int32 r3)
@@ -70,10 +71,10 @@ namespace dlib
         inline simd4i& operator=(const simd4i& v) { x = v.x; return *this; }
         inline simd4i& operator=(const int32& v) { *this = simd4i(v); return *this; }
 
-        inline vector signed int operator() () const { return x.v; }
+        inline __vector signed int operator() () const { return x.v; }
         inline int32 operator[](unsigned int idx) const { return x.x[idx]; }
         
-        inline vector bool int to_bool() const { return x.b; }
+        inline __vector __bool int to_bool() const { return x.b; }
         
         // intrinsics now seem to use xxpermdi automatically now
         inline void load_aligned(const int32* ptr)  { x.v = vec_ld(0, ptr); }
@@ -92,6 +93,8 @@ namespace dlib
 
 #elif defined(DLIB_HAVE_NEON)
 
+    class simd4f;
+
     class simd4i
     {
     public:
@@ -101,10 +104,26 @@ namespace dlib
         inline simd4i(int32 f) { x = vdupq_n_s32(f); }
         inline simd4i(int32 r0, int32 r1, int32 r2, int32 r3)
         {
-            int32 __attribute__((aligned(16))) data[4] = { r0, r1, r2, r3 };
+            alignas(16) int32 data[4] = { r0, r1, r2, r3 };
             x = vld1q_s32(data);
         }
         inline simd4i(const int32x4_t& val):x(val) {}
+
+        inline explicit simd4i(const simd4f& val);
+        /*!
+            requires
+                - Every lane of val is finite and its truncated value fits in int32.
+            ensures
+                - Each lane contains the corresponding value in val truncated toward zero.
+        !*/
+
+        inline simd4i& operator=(const simd4f& val);
+        /*!
+            requires
+                - Every lane of val is finite and its truncated value fits in int32.
+            ensures
+                - Assigns simd4i(val) to *this and returns *this.
+        !*/
 
         inline simd4i& operator=(const int32x4_t& val)
         {
@@ -113,7 +132,12 @@ namespace dlib
         }
 
         inline operator int32x4_t() const { return x; }
-        inline operator uint32x4_t() const { return (uint32x4_t)x; }
+
+        // Some NEON implementations use the same type for signed and unsigned vectors.
+        template <typename T, typename std::enable_if<
+            std::is_same<T, uint32x4_t>::value &&
+            !std::is_same<T, int32x4_t>::value, int>::type = 0>
+        inline operator T() const { return vreinterpretq_u32_s32(x); }
 
         inline void load_aligned(const type* ptr)  { x = vld1q_s32(ptr); }
         inline void store_aligned(type* ptr) const { vst1q_s32(ptr, x); }
@@ -253,7 +277,7 @@ namespace dlib
                       _lhs[2]*_rhs[2],
                       _lhs[3]*_rhs[3]);
 #elif defined(DLIB_HAVE_VSX)
-        vector int a = lhs(), b = rhs();
+        __vector int a = lhs(), b = rhs();
         asm("vmuluwm %0, %0, %1\n\t" : "+&v" (a) : "v" (b) );
         return simd4i(a);
 #elif defined(DLIB_HAVE_NEON)

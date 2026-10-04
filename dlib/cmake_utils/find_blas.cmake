@@ -316,10 +316,13 @@ elseif(WIN32 AND NOT MINGW)
          "C:/Program Files/Intel/Composer XE/mkl/lib/intel64"
          "C:/Program Files/Intel/Composer XE/tbb/lib/intel64/vc14"
          "C:/Program Files/Intel/Composer XE/compiler/lib/intel64"
+         "C:/Program Files (x86)/Intel/oneAPI/mkl/*/lib"
+         "C:/Program Files (x86)/Intel/oneAPI/compiler/*/lib"
          "C:/Program Files (x86)/Intel/oneAPI/mkl/*/lib/intel64"
          "C:/Program Files (x86)/Intel/oneAPI/compiler/*/windows/compiler/lib/intel64_win"
          )
       set (mkl_redist_path
+         "C:/Program Files (x86)/Intel/oneAPI/compiler/*/bin"
          "C:/Program Files (x86)/IntelSWTools/compilers_and_libraries/windows/redist/intel64/compiler" 
          "C:/Program Files (x86)/Intel/oneAPI/compiler/*/windows/redist/intel64_win/compiler"
          )
@@ -381,10 +384,12 @@ elseif(WIN32 AND NOT MINGW)
       list(APPEND mkl_libs ${mkl_sequential})
    else()
      find_library(mkl_thread mkl_intel_thread ${mkl_search_path})
-     find_library(mkl_iomp libiomp5md ${mkl_search_path})
-     mark_as_advanced(mkl_thread mkl_iomp)
-     list(APPEND mkl_libs ${mkl_thread} ${mkl_iomp})
-     if (mkl_iomp)
+     mark_as_advanced(mkl_thread)
+     if (mkl_thread)
+        find_library(mkl_iomp libiomp5md ${mkl_search_path})
+        mark_as_advanced(mkl_iomp)
+        list(APPEND mkl_libs ${mkl_thread} ${mkl_iomp})
+
         # See if we can find the dll that goes with this, so we can copy it to
         # the output folder, since a very large number of windows users don't
         # understand that they need to add the Intel MKL's folders to their

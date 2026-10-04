@@ -38,7 +38,7 @@ namespace dlib
             using tsu = type_safe_union<A,std::string>;
             tsu a(in_place_tag<A>{}, 0, 1); // a now contains an object of type A
         
-        It is also used with type_safe_union::for_each() to disambiguate types.
+        It is also used with type_safe_union::for_each_type() to disambiguate types.
     !*/
 
 // ----------------------------------------------------------------------------------------
@@ -101,6 +101,10 @@ namespace dlib
                     };
 
                     type_safe_union<int,std::string> my_type_safe_union;  // No error
+
+                Finally, note that if the constructor of one of the Types throws when the type
+                safe union is constructing it then the type safe union will be left in an empty
+                state.  I.e. this->empty() == true.
         !*/
 
     public:
@@ -236,6 +240,19 @@ namespace dlib
         !*/
 
         template <typename T>
+        static constexpr int get_type_id (
+            in_place_tag<T>
+        );
+        /*!
+           ensures
+                - returns get_type_id<T>()
+                - This is useful when using for_each_type() with a generic lambda. For example:
+                  for_each_type([](auto tag, auto&& me) {
+                    printf("ID %i\n", me.get_type_id(tag));
+                  }, item);
+        !*/
+
+        template <typename T>
         bool contains (
         ) const;
         /*!
@@ -360,16 +377,15 @@ namespace dlib
             ensures
                 - swaps *this and item
         !*/
-
     };
 
 // ----------------------------------------------------------------------------------------
 
     template<typename... Types>
     inline void swap (
-        type_safe_union<Types...>& a, 
-        type_safe_union<Types...>& b 
-    ) { a.swap(b); }   
+        type_safe_union<Types...>& a,
+        type_safe_union<Types...>& b
+    ) { a.swap(b); }
     /*!
         provides a global swap function
     !*/
@@ -447,68 +463,6 @@ namespace dlib
     !*/
 
 // ----------------------------------------------------------------------------------------
-
-    template<typename... T>
-    overloaded_helper<typename std::decay<T>::type...> overloaded(T&&... t)
-    {
-        return overloaded_helper<typename std::decay<T>::type...>{std::forward<T>(t)...};
-    }
-    /*!
-        This is a helper function for passing many callable objects (usually lambdas)
-        to either apply_to_contents(), visit() or for_each(), that combine to make a complete
-        visitor. A picture paints a thousand words:
-
-        using tsu = type_safe_union<int,float,std::string>;
-
-        tsu a = std::string("hello there");
-
-        std::string result;
-
-        a.apply_to_contents(overloaded(
-            [&result](int) {
-                result = std::string("int");
-            },
-            [&result](float) {
-                result = std::string("float");
-            },
-            [&result](const std::string& item) {
-                result = item;
-            }
-        ));
-
-        assert(result == "hello there");
-        result = "";
-
-        result = visit(overloaded(
-            [](int) {
-                return std::string("int");
-            },
-            [](float) {
-                return std::string("float");
-            },
-            [](const std::string& item) {
-                return item;
-            }
-        ), a);
-
-        assert(result == "hello there");
-
-        std::vector<int> type_ids;
-
-        for_each_type(a, overloaded(
-            [&type_ids](in_place_tag<int>, tsu& me) {
-                type_ids.push_back(me.get_type_id<int>());
-            },
-            [&type_ids](in_place_tag<float>, tsu& me) {
-                type_ids.push_back(me.get_type_id<float>());
-            },
-            [&type_ids](in_place_tag<std::string>, tsu& me) {
-                type_ids.push_back(me.get_type_id<std::string>());
-            }
-        ));
-
-        assert(type_ids == vector<int>({0,1,2}));
-    !*/
 }
 
 #endif // DLIB_TYPE_SAFE_UNION_KERNEl_ABSTRACT_

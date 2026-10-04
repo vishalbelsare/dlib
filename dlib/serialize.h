@@ -626,6 +626,7 @@ namespace dlib
     USE_DEFAULT_INT_SERIALIZATION_FOR(unsigned long)
     USE_DEFAULT_INT_SERIALIZATION_FOR(uint64)
     USE_DEFAULT_INT_SERIALIZATION_FOR(int64)
+    USE_DEFAULT_INT_SERIALIZATION_FOR(char32_t)
 
     USE_DEFAULT_BYTE_SERIALIZATION_FOR(char)
     USE_DEFAULT_BYTE_SERIALIZATION_FOR(signed char)
@@ -1144,58 +1145,6 @@ namespace dlib
 
 // ----------------------------------------------------------------------------------------
 
-    template<std::size_t I = 0, typename FuncT, typename... Tp>
-    inline typename std::enable_if<I == sizeof...(Tp), void>::type
-    for_each_in_tuple(std::tuple<Tp...>&, FuncT)
-    {}
-
-    template<std::size_t I = 0, typename FuncT, typename... Tp>
-    inline typename std::enable_if<I < sizeof...(Tp), void>::type
-    for_each_in_tuple(std::tuple<Tp...>& t, FuncT f)
-    {
-        f(std::get<I>(t));
-        for_each_in_tuple<I + 1, FuncT, Tp...>(t, f);
-    }
-    
-    template<std::size_t I = 0, typename FuncT, typename... Tp>
-    inline typename std::enable_if<I == sizeof...(Tp), void>::type
-    for_each_in_tuple(const std::tuple<Tp...>&, FuncT)
-    {}
-
-    template<std::size_t I = 0, typename FuncT, typename... Tp>
-    inline typename std::enable_if<I < sizeof...(Tp), void>::type
-    for_each_in_tuple(const std::tuple<Tp...>& t, FuncT f)
-    {
-        f(std::get<I>(t));
-        for_each_in_tuple<I + 1, FuncT, Tp...>(t, f);
-    }
-    
-    struct serialize_tuple_helper
-    {
-        serialize_tuple_helper(std::ostream& out_) : out(out_) {}
-        
-        template<typename T>
-        void operator()(const T& item)
-        {
-            serialize(item, out);
-        }
-                
-        std::ostream& out;
-    };
-    
-    struct deserialize_tuple_helper
-    {
-        deserialize_tuple_helper(std::istream& in_) : in(in_) {}
-        
-        template<typename T>
-        void operator()(T& item)
-        {
-            deserialize(item, in);
-        }
-                
-        std::istream& in;
-    };
-
     template <typename... Types>
     void serialize (
         const std::tuple<Types...>& item,
@@ -1204,7 +1153,9 @@ namespace dlib
     {
         try
         { 
-            for_each_in_tuple(item, serialize_tuple_helper(out));
+            for_each_in_tuple(item, [&](auto&& x) {
+                serialize(x, out);
+            });
         }
         catch (serialization_error& e)
         { throw serialization_error(e.info + "\n   while serializing object of type std::tuple"); }
@@ -1218,7 +1169,9 @@ namespace dlib
     {
         try
         { 
-            for_each_in_tuple(item, deserialize_tuple_helper(in));
+            for_each_in_tuple(item, [&](auto&& x) {
+                deserialize(x, in);
+            });
         }
         catch (serialization_error& e)
         { throw serialization_error(e.info + "\n   while deserializing object of type std::tuple"); }
@@ -2278,7 +2231,7 @@ namespace dlib
             //when deserializing unique_ptr, this is fresh state, so reset the pointers, even if item is non-empty
             bool is_non_empty;
             deserialize(is_non_empty, in);
-            item.reset(is_non_empty ? new T() : nullptr); //can't use make_unique since dlib does not use C++14 as a minimum requirement.
+            item.reset(is_non_empty ? new T() : nullptr);
             
             if (is_non_empty)
                 deserialize(*item, in);
@@ -2618,7 +2571,14 @@ namespace dlib
         // read the size
         in.read((char*)&size, sizeof(size));
         bo.little_to_host(size);
-        if (!in || size == 0)
+        // Empty protos will just be empty.
+        if (size == 0) 
+        {
+            item.Clear();
+            return;
+        }
+
+        if (!in)
             throw dlib::serialization_error("Error while deserializing a Google Protocol Buffer object.");
 
         // read the bytes into temp
@@ -2648,33 +2608,27 @@ namespace dlib
 
 // ----------------------------------------------------------------------------------------
 
-    template<typename T>
-    inline void serialize_these(std::ostream& out, const T& x)
+    template<typename... T>
+    inline void serialize_these(std::ostream& out, const T& ...x)
     {
         using dlib::serialize;
-        serialize(x, out);
+#ifdef __cpp_fold_expressions
+        (serialize(x, out),...);
+#else
+        (void)std::initializer_list<int>{(serialize(x, out),0)...};
+#endif
     }
     
-    template<typename T, typename... Rest>
-    inline void serialize_these(std::ostream& out, const T& x, const Rest& ... rest)
-    {
-        serialize_these(out, x);
-        serialize_these(out, rest...);
-    }
-    
-    template<typename T>
-    inline void deserialize_these(std::istream& in, T& x)
+    template<typename... T>
+    inline void deserialize_these(std::istream& in, T& ...x)
     {
         using dlib::deserialize;
-        deserialize(x, in);
+#ifdef __cpp_fold_expressions
+        (deserialize(x, in),...);
+#else
+        (void)std::initializer_list<int>{(deserialize(x, in),0)...};
+#endif
     }
-    
-    template<typename T, typename... Rest>
-    inline void deserialize_these(std::istream& in, T& x, Rest& ... rest)
-    {
-        deserialize_these(in, x);
-        deserialize_these(in, rest...);
-    }  
     
     #define DLIB_DEFINE_DEFAULT_SERIALIZATION(Type, ...)                \
     void serialize_to(std::ostream& dlibDefaultSer$_out) const          \

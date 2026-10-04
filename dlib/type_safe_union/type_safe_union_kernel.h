@@ -6,10 +6,10 @@
 #include "type_safe_union_kernel_abstract.h"
 #include <new>
 #include <iostream>
-#include <type_traits>
 #include <functional>
 #include "../serialize.h"
-#include "../invoke.h"
+#include "../type_traits.h"
+#include "../overloaded.h"
 
 namespace dlib
 {
@@ -18,7 +18,7 @@ namespace dlib
     class bad_type_safe_union_cast : public std::bad_cast 
     {
     public:
-          virtual const char * what() const throw()
+          virtual const char * what() const noexcept
           {
               return "bad_type_safe_union_cast";
           }
@@ -45,23 +45,11 @@ namespace dlib
 
     // ---------------------------------------------------------------------
 
-    namespace detail
-    {
-        template<size_t I, typename... Ts>
-        struct nth_type;
-
-        template<size_t I, typename T0, typename... Ts>
-        struct nth_type<I, T0, Ts...> : nth_type<I-1, Ts...> {};
-
-        template<typename T0, typename... Ts>
-        struct nth_type<0, T0, Ts...> { using type = T0; };
-    }
-
     template <size_t I, typename TSU>
     struct type_safe_union_alternative;
 
     template <size_t I, typename... Types>
-    struct type_safe_union_alternative<I, type_safe_union<Types...>> : detail::nth_type<I, Types...>{};
+    struct type_safe_union_alternative<I, type_safe_union<Types...>> : nth_type<I, Types...>{};
 
     template<size_t I, typename TSU>
     using type_safe_union_alternative_t = typename type_safe_union_alternative<I, TSU>::type;
@@ -82,14 +70,6 @@ namespace dlib
 
     namespace detail
     {
-        // ---------------------------------------------------------------------
-
-        template <typename T, typename First, typename... Rest>
-        struct is_any : std::integral_constant<bool, is_any<T,First>::value || is_any<T,Rest...>::value> {};
-
-        template <typename T, typename First>
-        struct is_any<T,First> : std::is_same<T,First> {};
-
         // ---------------------------------------------------------------------
 
         template <int nTs, typename T, typename... Ts>
@@ -126,12 +106,16 @@ namespace dlib
             return detail::type_safe_union_type_id<T,Types...>::value;
         }
 
+        template <typename T>
+        static constexpr int get_type_id (in_place_tag<T>)
+        {
+            return get_type_id<T>();
+        }
+
     private:
-        template<typename T>
-        struct is_valid : detail::is_any<T,Types...> {};
 
         template<typename T>
-        using is_valid_check = typename std::enable_if<is_valid<T>::value, bool>::type;
+        using is_valid_check = std::enable_if_t<is_any_type<T,Types...>::value, bool>;
 
         template <size_t I>
         using get_type_t = type_safe_union_alternative_t<I, type_safe_union>;
@@ -139,51 +123,47 @@ namespace dlib
         typename std::aligned_union<0, Types...>::type mem;
         int type_identity = 0;
 
-        template<
-            typename F,
-            typename TSU,
-            std::size_t I
-        >
-        static void apply_to_contents_as_type(
-            F&& f,
-            TSU&& me
-        )
+        template<typename F, typename TSU>
+        struct dispatcher
         {
-            std::forward<F>(f)(me.template unchecked_get<get_type_t<I>>());
-        }
+            constexpr static const std::size_t N = sizeof...(Types);
+            using R = decltype(std::declval<F>()(std::declval<TSU>().template unchecked_get<get_type_t<0>>()));
 
-        template<
-            typename F,
-            typename TSU,
-            std::size_t... I
-        >
-        static void apply_to_contents_impl(
-            F&& f,
-            TSU&& me,
-            dlib::index_sequence<I...>
-        )
-        {
-            using func_t = void(*)(F&&, TSU&&);
+            constexpr static const bool is_noexcept =
+                And<std::is_default_constructible<R>::value &&
+                    noexcept(std::declval<F>()(std::declval<TSU>().template unchecked_get<Types>()))...>::value;
 
-            const func_t vtable[] = {
-                /*! Empty (type_identity == 0) case !*/
-                [](F&&, TSU&&) {
-                },
-                /*! Non-empty cases !*/
-                &apply_to_contents_as_type<F&&,TSU&&,I>...
-            };
+            template<size_t I, typename std::enable_if<I == N, bool>::type = true>
+            inline R operator()(F&&, TSU&&, size_<I>)
+            noexcept(is_noexcept) { return R(); }
 
-            return vtable[me.get_current_type_id()](std::forward<F>(f), std::forward<TSU>(me));
+            template<size_t I, typename std::enable_if<I < N, bool>::type = true>
+            inline R operator()(F&& f, TSU&& me, size_<I>)
+            noexcept(is_noexcept)
+            {
+                if (me.is_empty())
+                    return R();
+                else if (me.get_current_type_id() == (I+1))
+                    return std::forward<F>(f)(me.template unchecked_get<get_type_t<I>>());
+                else
+                    return (*this)(std::forward<F>(f), std::forward<TSU>(me), size_<I+1>{});
+            }
+        };
+
+        template<typename F, typename TSU>
+        static inline decltype(auto) dispatch(F&& f, TSU&& me)
+        noexcept(noexcept(dispatcher<F&&,TSU&&>{}(std::forward<F>(f), std::forward<TSU>(me), size_<0>{}))) {
+            return dispatcher<F&&,TSU&&>{}(std::forward<F>(f), std::forward<TSU>(me), size_<0>{});
         }
 
         template <typename T>
-        const T& unchecked_get() const
+        const T& unchecked_get() const noexcept
         {
             return *reinterpret_cast<const T*>(&mem);
         }
 
         template <typename T>
-        T& unchecked_get()
+        T& unchecked_get() noexcept
         {
             return *reinterpret_cast<T*>(&mem);
         }
@@ -223,7 +203,7 @@ namespace dlib
             template<typename T>
             void operator()(T&& x)
             {
-                using U = typename std::decay<T>::type;
+                using U = std::decay_t<T>;
 
                 if (_me.type_identity != get_type_id<U>())
                 {
@@ -267,6 +247,7 @@ namespace dlib
                 This class swaps an object with `me`.
             !*/
             swap_to(type_safe_union& me) : _me(me) {}
+
             template<typename T>
             void operator()(T& x)
             /*!
@@ -287,7 +268,9 @@ namespace dlib
 
         type_safe_union (
             const type_safe_union& item
-        ) : type_safe_union()
+        )
+        noexcept(are_nothrow_copy_constructible<Types...>::value)
+        : type_safe_union()
         {
             item.apply_to_contents(assign_to{*this});
         }
@@ -295,6 +278,8 @@ namespace dlib
         type_safe_union& operator=(
             const type_safe_union& item
         )
+        noexcept(are_nothrow_copy_constructible<Types...>::value &&
+                 are_nothrow_copy_assignable<Types...>::value)
         {
             if (item.is_empty())
                 destruct();
@@ -305,7 +290,9 @@ namespace dlib
 
         type_safe_union (
             type_safe_union&& item
-        ) : type_safe_union()
+        )
+        noexcept(are_nothrow_move_constructible<Types...>::value)
+        : type_safe_union()
         {
             item.apply_to_contents(move_to{*this});
             item.destruct();
@@ -314,6 +301,8 @@ namespace dlib
         type_safe_union& operator= (
             type_safe_union&& item
         )
+        noexcept(are_nothrow_move_constructible<Types...>::value &&
+                 are_nothrow_move_assignable<Types...>::value)
         {
             if (item.is_empty())
             {
@@ -329,22 +318,26 @@ namespace dlib
 
         template <
             typename T,
-            is_valid_check<typename std::decay<T>::type> = true
+            is_valid_check<std::decay_t<T>> = true
         >
         type_safe_union (
             T&& item
-        ) : type_safe_union()
+        )
+        noexcept(std::is_nothrow_constructible<std::decay_t<T>, T>::value)
+        : type_safe_union()
         {
             assign_to{*this}(std::forward<T>(item));
         }
 
         template <
             typename T,
-            is_valid_check<typename std::decay<T>::type> = true
+            is_valid_check<std::decay_t<T>> = true
         >
         type_safe_union& operator= (
             T&& item
         )
+        noexcept(std::is_nothrow_constructible<std::decay_t<T>, T>::value &&
+                 std::is_nothrow_assignable<std::decay_t<T>, T>::value)
         {
             assign_to{*this}(std::forward<T>(item));
             return *this;
@@ -359,6 +352,8 @@ namespace dlib
             in_place_tag<T>,
             Args&&... args
         )
+        noexcept(std::is_nothrow_constructible<T, Args...>::value)
+        : type_safe_union()
         {
             construct<T>(std::forward<Args>(args)...);
         }
@@ -381,69 +376,41 @@ namespace dlib
         void emplace(
             Args&&... args
         )
+        noexcept(std::is_nothrow_constructible<T, Args...>::value)
         {
             construct<T>(std::forward<Args>(args)...);
         }
 
         template <typename F>
-        void apply_to_contents(
+        decltype(auto) apply_to_contents(
             F&& f
-        )
-        {
-            apply_to_contents_impl(std::forward<F>(f), *this, dlib::make_index_sequence<sizeof...(Types)>{});
+        ) noexcept(noexcept(dispatch(std::forward<F>(f), std::declval<type_safe_union&>()))) {
+            return dispatch(std::forward<F>(f), *this);
         }
 
         template <typename F>
-        void apply_to_contents(
+        decltype(auto) apply_to_contents(
             F&& f
-        ) const
-        {
-            apply_to_contents_impl(std::forward<F>(f), *this, dlib::make_index_sequence<sizeof...(Types)>{});
+        ) const noexcept(noexcept(dispatch(std::forward<F>(f), std::declval<const type_safe_union&>()))) {
+            return dispatch(std::forward<F>(f), *this);
         }
 
         template <typename T>
         bool contains (
-        ) const
+        ) const noexcept
         {
             return type_identity == get_type_id<T>();
         }
 
         bool is_empty (
-        ) const
+        ) const noexcept
         {
             return type_identity == 0;
         }
 
-        int get_current_type_id() const
+        int get_current_type_id() const noexcept
         {
             return type_identity;
-        }
-
-        void swap (
-            type_safe_union& item
-        )
-        {
-            if (type_identity == item.type_identity)
-            {
-                item.apply_to_contents(swap_to{*this});
-            }
-            else if (is_empty())
-            {
-                item.apply_to_contents(move_to{*this});
-                item.destruct();
-            }
-            else if (item.is_empty())
-            {
-                apply_to_contents(move_to{item});
-                destruct();
-            }
-            else
-            {
-                type_safe_union tmp;
-                swap(tmp);      // this -> tmp
-                swap(item);     // item -> this
-                tmp.swap(item); // tmp (this) -> item
-            }
         }
 
         template <
@@ -452,6 +419,7 @@ namespace dlib
         >
         T& get(
         )
+        noexcept(std::is_nothrow_default_constructible<T>::value)
         {
             if (type_identity != get_type_id<T>())
                 construct<T>();
@@ -464,6 +432,7 @@ namespace dlib
         T& get(
             in_place_tag<T>
         )
+        noexcept(std::is_nothrow_default_constructible<T>::value)
         {
             return get<T>();
         }
@@ -493,13 +462,39 @@ namespace dlib
             else
                 throw bad_type_safe_union_cast();
         }
+
+        void swap(
+            type_safe_union& item
+        ) noexcept(std::is_nothrow_move_constructible<type_safe_union>::value &&
+                   are_nothrow_swappable<Types...>::value)
+        {
+            if (type_identity == item.type_identity)
+            {
+                apply_to_contents(swap_to{item});
+            }
+            else if (is_empty())
+            {
+                *this = std::move(item);
+            }
+            else if (item.is_empty())
+            {
+                item = std::move(*this);
+            }
+            else
+            {
+                type_safe_union tmp{std::move(*this)};
+                *this = std::move(item);
+                item  = std::move(tmp);
+            }
+        }
     };
 
     template <typename ...Types>
     inline void swap (
         type_safe_union<Types...>& a,
         type_safe_union<Types...>& b
-    ) { a.swap(b); }
+    ) noexcept(noexcept(a.swap(b)))
+    { a.swap(b); }
 
     namespace detail
     {
@@ -511,10 +506,17 @@ namespace dlib
         void for_each_type_impl(
             F&& f,
             TSU&& tsu,
-            dlib::index_sequence<I...>
+            std::index_sequence<I...>
         )
         {
-            using Tsu = typename std::decay<TSU>::type;
+            using Tsu = std::decay_t<TSU>;
+
+#ifdef __cpp_fold_expressions
+            (std::forward<F>(f)(
+                in_place_tag<type_safe_union_alternative_t<I, Tsu>>{},
+                std::forward<TSU>(tsu)),
+            ...);
+#else
             (void)std::initializer_list<int>{
                 (std::forward<F>(f)(
                         in_place_tag<type_safe_union_alternative_t<I, Tsu>>{},
@@ -522,48 +524,7 @@ namespace dlib
                  0
                 )...
             };
-        }
-
-        template<
-            typename R,
-            typename F,
-            typename TSU,
-            std::size_t I
-        >
-        R visit_impl_as_type(
-            F&& f,
-            TSU&& tsu
-        )
-        {
-            using Tsu = typename std::decay<TSU>::type;
-            using T   = type_safe_union_alternative_t<I, Tsu>;
-            return dlib::invoke(std::forward<F>(f), tsu.template cast_to<T>());
-        }
-
-        template<
-            typename R,
-            typename F,
-            typename TSU,
-            std::size_t... I
-        >
-        R visit_impl(
-            F&& f,
-            TSU&& tsu,
-            dlib::index_sequence<I...>
-        )
-        {
-            using func_t = R(*)(F&&, TSU&&);
-
-            const func_t vtable[] = {
-                /*! Empty (type_identity == 0) case !*/
-                [](F&&, TSU&&) {
-                    return R();
-                },
-                /*! Non-empty cases !*/
-                &visit_impl_as_type<R,F&&,TSU&&,I>...
-            };
-
-            return vtable[tsu.get_current_type_id()](std::forward<F>(f), std::forward<TSU>(tsu));
+#endif            
         }
     }
 
@@ -576,62 +537,18 @@ namespace dlib
         TSU&& tsu
     )
     {
-        using Tsu = typename std::decay<TSU>::type;
+        using Tsu = std::decay_t<TSU>;
         static constexpr std::size_t Size = type_safe_union_size<Tsu>::value;
-        detail::for_each_type_impl(std::forward<F>(f), std::forward<TSU>(tsu), dlib::make_index_sequence<Size>{});
+        detail::for_each_type_impl(std::forward<F>(f), std::forward<TSU>(tsu), std::make_index_sequence<Size>{});
     }
 
-    template<
-        typename F,
-        typename TSU,
-        typename Tsu = typename std::decay<TSU>::type,
-        typename T0  = type_safe_union_alternative_t<0, Tsu>
-    >
-    auto visit(
+    template<typename F, typename TSU>
+    decltype(auto) visit(
         F&& f,
         TSU&& tsu
-    ) -> dlib::invoke_result_t<F, decltype(tsu.template cast_to<T0>())>
-    {
-        using ReturnType = dlib::invoke_result_t<F, decltype(tsu.template cast_to<T0>())>;
-        static constexpr std::size_t Size = type_safe_union_size<Tsu>::value;
-        return detail::visit_impl<ReturnType>(std::forward<F>(f), std::forward<TSU>(tsu), dlib::make_index_sequence<Size>{});
+    ) noexcept(noexcept(tsu.apply_to_contents(std::forward<F>(f)))) {
+        return tsu.apply_to_contents(std::forward<F>(f));
     }
-
-    namespace detail
-    {
-        struct serialize_helper
-        {
-            serialize_helper(std::ostream& out_) : out(out_) {}
-
-            template <typename T>
-            void operator() (const T& item) const 
-            { 
-                serialize(item, out); 
-            } 
-
-            std::ostream& out;
-        };  
-
-        struct deserialize_helper
-        {
-            deserialize_helper(
-                std::istream& in_,
-                int index_
-            ) : index(index_),
-                in(in_)
-            {}
-
-            template<typename T, typename TSU>
-            void operator()(in_place_tag<T>, TSU&& x)
-            {
-                if (index == x.template get_type_id<T>())
-                    deserialize(x.template get<T>(), in);
-            }
-
-            const int index = -1;
-            std::istream& in;
-        };
-    } // namespace detail
 
     template<typename... Types>
     inline void serialize (
@@ -642,7 +559,9 @@ namespace dlib
         try
         {
             serialize(item.get_current_type_id(), out);
-            item.apply_to_contents(detail::serialize_helper(out));
+            item.apply_to_contents([&](auto&& x) {
+                serialize(x, out);
+            });
         }
         catch (serialization_error& e)
         {
@@ -664,7 +583,10 @@ namespace dlib
             if (index == 0)
                 item.clear();
             else if (index > 0 && index <= (int)sizeof...(Types))
-                for_each_type(detail::deserialize_helper(in, index), item);
+                for_each_type([&](auto tag, auto&& me) {
+                    if (index == me.get_type_id(tag))
+                        deserialize(me.get(tag), in);
+                }, item);
             else
                 throw serialization_error("bad index value. Should be in range [0,sizeof...(Types))");
         }
@@ -672,50 +594,6 @@ namespace dlib
         {
             throw serialization_error(e.info + "\n   while deserializing an object of type type_safe_union");
         }
-    }
-
-#if __cplusplus >= 201703L
-
-    template<typename ...Base>
-    struct overloaded_helper : Base...
-    {
-        template<typename... T>
-        overloaded_helper(T&& ... t) : Base{std::forward<T>(t)}... {}
-
-        using Base::operator()...;
-    };
-
-#else
-
-    template<typename Base, typename ... BaseRest>
-    struct overloaded_helper: Base, overloaded_helper<BaseRest...>
-    {
-        template<typename T, typename ... TRest>
-        overloaded_helper(T&& t, TRest&& ...trest) :
-            Base{std::forward<T>(t)},
-            overloaded_helper<BaseRest...>{std::forward<TRest>(trest)...}
-        {}
-
-        using Base::operator();
-        using overloaded_helper<BaseRest...>::operator();
-    };
-
-    template<typename Base>
-    struct overloaded_helper<Base> : Base
-    {
-        template<typename T>
-        overloaded_helper<Base>(T&& t) : Base{std::forward<T>(t)}
-        {}
-
-        using Base::operator();
-    };
-
-#endif //__cplusplus >= 201703L
-
-    template<typename... T>
-    overloaded_helper<typename std::decay<T>::type...> overloaded(T&&... t)
-    {
-        return overloaded_helper<typename std::decay<T>::type...>{std::forward<T>(t)...};
     }
 }
 

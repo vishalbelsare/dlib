@@ -3,22 +3,24 @@
 #ifndef DLIB_DNn_CORE_H_
 #define DLIB_DNn_CORE_H_
 
-#include "core_abstract.h"
-#include "../cuda/tensor.h"
 #include <iterator>
 #include <memory>
 #include <sstream>
-#include <type_traits>
-#include "../statistics.h"
-#include "../rand.h"
-#include "../algs.h"
 #include <utility>
 #include <tuple>
 #include <cmath>
 #include <vector>
-#include "../cuda/tensor_tools.h"
 #include <type_traits>
+
+#include "core_abstract.h"
+#include "../cuda/tensor.h"
+#include "../cuda/tensor_tools.h"
+#include "../statistics.h"
+#include "../rand.h"
+#include "../algs.h"
 #include "../metaprogramming.h"
+#include "../utility.h"
+#include "../constexpr_if.h"
 
 #ifdef _MSC_VER
 // Tell Visual Studio not to recursively inline functions very much because otherwise it
@@ -35,30 +37,48 @@ namespace dlib
 
     namespace impl
     {
-        template <typename T, typename int_<decltype(&T::get_learning_rate_multiplier)>::type = 0>
-        double get_learning_rate_multiplier (
-            const T& obj,
-            special_
-        ) { return obj.get_learning_rate_multiplier(); }
+        template<typename T>
+        using has_get_learning_rate_multiplier = decltype(std::declval<T>().get_learning_rate_multiplier());
+    
+        template<typename T>
+        using has_set_learning_rate_multiplier = decltype(std::declval<T>().set_learning_rate_multiplier(double{}));
 
-        template <typename T>
-        double get_learning_rate_multiplier ( const T& , general_) { return 1; }
+        template<typename T>
+        using has_get_bias_learning_rate_multiplier = decltype(std::declval<T>().get_bias_learning_rate_multiplier());
+
+        template<typename T>
+        using has_set_bias_learning_rate_multiplier = decltype(std::declval<T>().set_bias_learning_rate_multiplier(double{}));
+    
+        template<typename T>
+        using has_get_weight_decay_multiplier = decltype(std::declval<T>().get_weight_decay_multiplier());
+
+        template<typename T>
+        using has_set_weight_decay_multiplier = decltype(std::declval<T>().set_weight_decay_multiplier(double{}));
+
+        template<typename T>
+        using has_get_bias_weight_decay_multiplier = decltype(std::declval<T>().get_bias_weight_decay_multiplier());
+
+        template<typename T>
+        using has_set_bias_weight_decay_multiplier = decltype(std::declval<T>().set_bias_weight_decay_multiplier(double{}));
+
+        template<typename T>
+        using has_disable_bias = decltype(std::declval<T>().disable_bias());
+
+        template<typename T>
+        using has_clean = decltype(std::declval<T>().clean());
     }
+
+// ----------------------------------------------------------------------------------------
+
     template <typename T>
-    double get_learning_rate_multiplier(const T& obj) { return impl::get_learning_rate_multiplier(obj, special_()); }
-
-    namespace impl
-    {
-        template <typename T, typename int_<decltype(&T::set_learning_rate_multiplier)>::type = 0>
-        void set_learning_rate_multiplier (
-            T& obj,
-            special_,
-            double learning_rate_multiplier
-        ) { obj.set_learning_rate_multiplier(learning_rate_multiplier); }
-
-        template <typename T>
-        void set_learning_rate_multiplier (T& , general_, double) { }
+    double get_learning_rate_multiplier(const T& obj) 
+    { 
+        return switch_(bools(is_detected<impl::has_get_learning_rate_multiplier, T>{}),
+            [&](true_t, auto _) { return _(obj).get_learning_rate_multiplier(); },
+            [](auto...)         { return 1.0; }
+        );
     }
+
     template <typename T>
     void set_learning_rate_multiplier(
         T& obj,
@@ -66,37 +86,23 @@ namespace dlib
     )
     {
         DLIB_CASSERT(learning_rate_multiplier >= 0);
-        impl::set_learning_rate_multiplier(obj, special_(), learning_rate_multiplier);
+        switch_(bools(is_detected<impl::has_set_learning_rate_multiplier, T>{}),
+            [&](true_t, auto _) { _(obj).set_learning_rate_multiplier(learning_rate_multiplier); },
+            [](auto...)         {/*no-op*/}
+        );
     }
 
 // ----------------------------------------------------------------------------------------
 
-    namespace impl
-    {
-        template <typename T, typename int_<decltype(&T::get_bias_learning_rate_multiplier)>::type = 0>
-        double get_bias_learning_rate_multiplier (
-            const T& obj,
-            special_
-        ) { return obj.get_bias_learning_rate_multiplier(); }
-
-        template <typename T>
-        double get_bias_learning_rate_multiplier ( const T& , general_) { return 1; }
-    }
     template <typename T>
-    double get_bias_learning_rate_multiplier(const T& obj) { return impl::get_bias_learning_rate_multiplier(obj, special_()); }
-
-    namespace impl
+    double get_bias_learning_rate_multiplier(const T& obj) 
     {
-        template <typename T, typename int_<decltype(&T::set_bias_learning_rate_multiplier)>::type = 0>
-        void set_bias_learning_rate_multiplier (
-            T& obj,
-            special_,
-            double bias_learning_rate_multiplier
-        ) { obj.set_bias_learning_rate_multiplier(bias_learning_rate_multiplier); }
-
-        template <typename T>
-        void set_bias_learning_rate_multiplier (T& , general_, double) { }
+        return switch_(bools(is_detected<impl::has_get_bias_learning_rate_multiplier, T>{}),
+            [&](true_t, auto _) { return _(obj).get_bias_learning_rate_multiplier(); },
+            [](auto...)         { return 1.0; }
+        );
     }
+
     template <typename T>
     void set_bias_learning_rate_multiplier(
         T& obj,
@@ -104,37 +110,23 @@ namespace dlib
     )
     {
         DLIB_CASSERT(bias_learning_rate_multiplier >= 0);
-        impl::set_bias_learning_rate_multiplier(obj, special_(), bias_learning_rate_multiplier);
+        switch_(bools(is_detected<impl::has_set_bias_learning_rate_multiplier, T>{}),
+            [&](true_t, auto _) { _(obj).set_bias_learning_rate_multiplier(bias_learning_rate_multiplier); },
+            [](auto...)         {/*no-op*/}
+        );
     }
 
 // ----------------------------------------------------------------------------------------
 
-    namespace impl
-    {
-        template <typename T, typename int_<decltype(&T::get_weight_decay_multiplier)>::type = 0>
-        double get_weight_decay_multiplier (
-            const T& obj,
-            special_
-        ) { return obj.get_weight_decay_multiplier(); }
-
-        template <typename T>
-        double get_weight_decay_multiplier ( const T& , general_) { return 1; }
-    }
     template <typename T>
-    double get_weight_decay_multiplier(const T& obj) { return impl::get_weight_decay_multiplier(obj, special_()); }
-
-    namespace impl
-    {
-        template <typename T, typename int_<decltype(&T::set_weight_decay_multiplier)>::type = 0>
-        void set_weight_decay_multiplier (
-            T& obj,
-            special_,
-            double weight_decay_multiplier
-        ) { obj.set_weight_decay_multiplier(weight_decay_multiplier); }
-
-        template <typename T>
-        void set_weight_decay_multiplier (T& , general_, double) { }
+    double get_weight_decay_multiplier(const T& obj) 
+    { 
+        return switch_(bools(is_detected<impl::has_get_weight_decay_multiplier, T>{}),
+            [&](true_t, auto _) { return _(obj).get_weight_decay_multiplier(); },
+            [](auto...)         { return 1.0; }
+        );
     }
+
     template <typename T>
     void set_weight_decay_multiplier(
         T& obj,
@@ -142,37 +134,23 @@ namespace dlib
     )
     {
         DLIB_CASSERT(weight_decay_multiplier >= 0);
-        impl::set_weight_decay_multiplier(obj, special_(), weight_decay_multiplier);
+        switch_(bools(is_detected<impl::has_set_weight_decay_multiplier, T>{}),
+            [&](true_t, auto _) { _(obj).set_weight_decay_multiplier(weight_decay_multiplier); },
+            [](auto...)         {/*no-op*/}
+        );
     }
 
 // ----------------------------------------------------------------------------------------
 
-    namespace impl
-    {
-        template <typename T, typename int_<decltype(&T::get_bias_weight_decay_multiplier)>::type = 0>
-        double get_bias_weight_decay_multiplier (
-            const T& obj,
-            special_
-        ) { return obj.get_bias_weight_decay_multiplier(); }
-
-        template <typename T>
-        double get_bias_weight_decay_multiplier ( const T& , general_) { return 1; }
-    }
     template <typename T>
-    double get_bias_weight_decay_multiplier(const T& obj) { return impl::get_bias_weight_decay_multiplier(obj, special_()); }
-
-    namespace impl
-    {
-        template <typename T, typename int_<decltype(&T::set_bias_weight_decay_multiplier)>::type = 0>
-        void set_bias_weight_decay_multiplier (
-            T& obj,
-            special_,
-            double bias_weight_decay_multiplier
-        ) { obj.set_bias_weight_decay_multiplier(bias_weight_decay_multiplier); }
-
-        template <typename T>
-        void set_bias_weight_decay_multiplier (T& , general_, double) { }
+    double get_bias_weight_decay_multiplier(const T& obj)
+    { 
+        return switch_(bools(is_detected<impl::has_get_bias_weight_decay_multiplier, T>{}),
+            [&](true_t, auto _) { return _(obj).get_bias_weight_decay_multiplier(); },
+            [](auto...)         { return 1.0; }
+        );
     }
+
     template <typename T>
     void set_bias_weight_decay_multiplier(
         T& obj,
@@ -180,51 +158,39 @@ namespace dlib
     )
     {
         DLIB_CASSERT(bias_weight_decay_multiplier >= 0);
-        impl::set_bias_weight_decay_multiplier(obj, special_(), bias_weight_decay_multiplier);
+        switch_(bools(is_detected<impl::has_set_bias_weight_decay_multiplier, T>{}),
+            [&](true_t, auto _) { _(obj).set_bias_weight_decay_multiplier(bias_weight_decay_multiplier); },
+            [](auto...)         {/*no-op*/}
+        );
     }
 
 // ----------------------------------------------------------------------------------------
-
-    namespace impl
-    {
-        template <typename T, typename int_<decltype(&T::disable_bias)>::type = 0>
-        void disable_bias(
-            T& obj,
-            special_
-        ) { obj.disable_bias(); }
-
-        template <typename T>
-        void disable_bias( const T& , general_) { }
-    }
 
     template <typename T>
     void disable_bias(
         T& obj
     )
     {
-        impl::disable_bias(obj, special_());
+        switch_(bools(is_detected<impl::has_disable_bias, T>{}),
+            [&](true_t, auto _) { _(obj).disable_bias(); },
+            [](auto...)         { /*no-op*/ }
+        );
     }
 
 // ----------------------------------------------------------------------------------------
 
-    namespace impl
-    {
-        // The reason we return an int for this version rather than doing the more straight forward thing (like we do above) is to avoid a bug in visual studio 2015.
-        template <typename T>
-        auto call_clean_method_if_exists (
-            T& obj,
-            special_
-        ) -> typename int_<decltype(&T::clean)>::type { obj.clean();  return 0;  }
-
-        template <typename T>
-        void call_clean_method_if_exists (T& , general_) {}
-    }
     template <typename T>
-    void call_clean_method_if_exists(T& obj) { impl::call_clean_method_if_exists(obj, special_()); }
+    void call_clean_method_if_exists(T& obj) 
     /*!
         ensures
             - calls obj.clean() if obj has a .clean() method.
     !*/
+    { 
+        switch_(bools(is_detected<impl::has_clean, T>{}),
+            [&](true_t, auto _) { _(obj).clean(); },
+            [](auto...)         { /*no-op*/ }
+        );
+    }
 
 // ----------------------------------------------------------------------------------------
 
@@ -292,44 +258,42 @@ namespace dlib
 
     namespace impl
     {
-        template <size_t... indices, typename Tuple>
+        template <typename Tuple, size_t... indices>
         auto tuple_subset(
             const Tuple& item, 
-            compile_time_integer_list<indices...>
-        ) -> decltype(std::make_tuple(std::get<indices>(item)...))
+            std::index_sequence<indices...>
+        )
         {
             return std::make_tuple(std::get<indices>(item)...);
         }
 
-        template <typename Head, typename... Tail>
-        std::tuple<Tail...> basic_tuple_tail(
-            const std::tuple<Head, Tail...>& item
+        template <typename ...Types>
+        auto basic_tuple_tail(
+            const std::tuple<Types...>& item
         )
         {
-            return tuple_subset(item, typename make_compile_time_integer_range<sizeof...(Tail)>::type());
+            return tuple_subset(item, pop_front_t<index_sequence_for<Types...>>{});
         }
 
         template <typename T>
-        std::tuple<T> tuple_flatten(const T& t) 
+        auto tuple_flatten(const T& t) 
         {
             return std::make_tuple(t);
         }
 
-        template <typename... T>
-        auto tuple_flatten(
-            const std::tuple<T...>& item
-        ) -> decltype(tuple_flatten(item, typename make_compile_time_integer_range<sizeof...(T)>::type()))
-        {
-            return tuple_flatten(item, typename make_compile_time_integer_range<sizeof...(T)>::type());
-        }
-
-        template <size_t... indices, typename... T>
+        template <size_t... I, typename... T>
         auto tuple_flatten(
             const std::tuple<T...>& item, 
-            compile_time_integer_list<indices...>
-        ) -> decltype(std::tuple_cat(tuple_flatten(std::get<indices-1>(item))...))
+            std::index_sequence<I...>
+        )
         {
-            return std::tuple_cat(tuple_flatten(std::get<indices-1>(item))...);
+            return std::tuple_cat(tuple_flatten(std::get<I>(item))...);
+        }
+
+        template <typename... T>
+        auto tuple_flatten(const std::tuple<T...>& item)
+        {
+            return tuple_flatten(item, std::index_sequence_for<T...>{});
         }
 
         template <typename T>
@@ -551,7 +515,7 @@ namespace dlib
     } // end namespace impl
 
     template <typename... T>
-    typename impl::tuple_head_helper<std::tuple<T...>>::type tuple_head (
+    auto tuple_head (
         const std::tuple<T...>& item
     ) 
     {
@@ -561,7 +525,7 @@ namespace dlib
     template <typename... T>
     auto tuple_tail(
         const std::tuple<T...>& item
-    ) -> decltype(impl::basic_tuple_tail(impl::tuple_flatten(item)))
+    )
     {
         return impl::basic_tuple_tail(impl::tuple_flatten(item));
     }
@@ -2259,7 +2223,7 @@ namespace dlib
         void back_propagate_error(
             const tensor& /*x*/,
             const tensor& /*gradient_input*/,
-            zero_gradients zero_grads = zero_gradients::yes
+            zero_gradients /*zero_grads*/ = zero_gradients::yes
         )
         {
             // nothing to do
@@ -3273,8 +3237,8 @@ namespace dlib
                 // layer.
                 const long num_samples = rnd.get_random_32bit_number()%4+3;
                 const long k  = rnd.get_random_32bit_number()%4+2;
-                const long nr = rnd.get_random_32bit_number()%4+2;
-                const long nc = rnd.get_random_32bit_number()%4+2;
+                const long nr = ((rnd.get_random_32bit_number()%4)/2)*2+2;
+                const long nc = ((rnd.get_random_32bit_number()%4)/2)*2+2;
 
                 output.set_size(num_samples, k, nr, nc);
                 gradient_input.set_size(num_samples, k, nr, nc);
@@ -3426,9 +3390,8 @@ namespace dlib
                 const auto forward_error = max(abs(mat(ip_out) - mat(subnetwork2.get_output())));
                 if (forward_error > 0.00001)
                 {
-                    using namespace std;
                     sout << "This layer is supposed to support in-place computations but the output of forward_inplace()\n";
-                    sout << "changes when invoked in-place vs. out-of-place. The error was: " << forward_error << endl;
+                    sout << "changes when invoked in-place vs. out-of-place. The error was: " << forward_error << std::endl;
                     return layer_test_results(sout.str()); 
                 }
 
@@ -3458,18 +3421,16 @@ namespace dlib
                     const auto backward_param_error = max(abs(mat(params_grad1) - mat(params_grad2)));
                     if (backward_param_error > 0.00001)
                     {
-                        using namespace std;
                         sout << "This layer is supposed to support in-place computations but the output of backward_inplace()\n";
-                        sout << "changes when invoked in-place vs. out-of-place. The error was: " << backward_param_error << endl;
+                        sout << "changes when invoked in-place vs. out-of-place. The error was: " << backward_param_error << std::endl;
                         return layer_test_results(sout.str()); 
                     }
                 }
                 const auto backward_data_error = max(abs(mat(data_grad1)-9 - mat(data_grad2)));
                 if (backward_data_error > 0.00001)
                 {
-                    using namespace std;
                     sout << "This layer is supposed to support in-place computations but the output of backward_inplace()\n";
-                    sout << "changes when invoked in-place vs. out-of-place. The error was: " << backward_data_error << endl;
+                    sout << "changes when invoked in-place vs. out-of-place. The error was: " << backward_data_error << std::endl;
                     return layer_test_results(sout.str()); 
                 }
             }
@@ -3503,11 +3464,10 @@ namespace dlib
                 rs_params.add(std::abs(relative_error));
                 if (std::abs(relative_error) > 0.05 && std::abs(absolute_error) > 0.006)
                 {
-                    using namespace std;
-                    sout << "Gradient error in parameter #" << i <<".  Relative error: "<< relative_error << endl;
-                    sout << "expected derivative: " << reference_derivative << endl;
-                    sout << "output derivative:   " << output_derivative << endl;
-                    sout << "iteration:           " << iter << endl;
+                    sout << "Gradient error in parameter #" << i <<".  Relative error: "<< relative_error << std::endl;
+                    sout << "expected derivative: " << reference_derivative << std::endl;
+                    sout << "output derivative:   " << output_derivative << std::endl;
+                    sout << "iteration:           " << iter << std::endl;
                     return layer_test_results(sout.str()); 
                 }
             }
@@ -3540,11 +3500,10 @@ namespace dlib
                 rs_data.add(std::abs(relative_error));
                 if (std::abs(relative_error) > 0.05 && std::abs(absolute_error) > 0.006)
                 {
-                    using namespace std;
-                    sout << "Gradient error in data variable #" << i <<".  Relative error: "<< relative_error << endl;
-                    sout << "expected derivative: " << reference_derivative << endl;
-                    sout << "output derivative:   " << output_derivative << endl;
-                    sout << "iteration:           " << iter << endl;
+                    sout << "Gradient error in data variable #" << i <<".  Relative error: "<< relative_error << std::endl;
+                    sout << "expected derivative: " << reference_derivative << std::endl;
+                    sout << "output derivative:   " << output_derivative << std::endl;
+                    sout << "iteration:           " << iter << std::endl;
                     return layer_test_results(sout.str()); 
                 }
             }
@@ -3553,14 +3512,12 @@ namespace dlib
 
         if (rs_params.mean() > 0.003)
         {
-            using namespace std;
-            sout << "Average parameter gradient error is somewhat large at: "<< rs_params.mean() << endl;
+            sout << "Average parameter gradient error is somewhat large at: "<< rs_params.mean() << std::endl;
             return layer_test_results(sout.str()); 
         }
         if (rs_data.mean() > 0.003)
         {
-            using namespace std;
-            sout << "Average data gradient error is somewhat large at: "<< rs_data.mean() << endl;
+            sout << "Average data gradient error is somewhat large at: "<< rs_data.mean() << std::endl;
             return layer_test_results(sout.str()); 
         }
 
@@ -3746,7 +3703,7 @@ namespace dlib
                 typename visitor
                 >
             static void visit(
-                net_type& net,
+                net_type&,
                 const add_tag_layer<tag_id,SUBNET>& next_net,
                 visitor&& v
             )
@@ -3760,7 +3717,7 @@ namespace dlib
                 typename visitor
                 >
             static void visit(
-                net_type& net,
+                net_type&,
                 add_tag_layer<tag_id,SUBNET>& next_net,
                 visitor&& v
             )
